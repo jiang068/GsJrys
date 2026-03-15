@@ -22,13 +22,11 @@ async def get_fortune(bot: Bot, ev: Event):
     today = datetime.now().strftime('%Y-%m-%d')
     
     try:
-        # 1. 自动清理过期记录 (每天只触发一次)
         global _last_cleanup_date
         if jrys_config.get_config('enable_auto_cleanup').data and _last_cleanup_date != today:
             asyncio.create_task(cleanup_old_fortune_files())
             _last_cleanup_date = today
 
-        # 2. 获取或生成运势
         record = await get_fortune_record(user_id, today)
         if record:
             fortune_data = record['fortune_data']
@@ -36,9 +34,8 @@ async def get_fortune(bot: Bot, ev: Event):
             fortune_data = get_fortune_data()
             await save_fortune_record(user_id, today, fortune_data, ev.bot_id)
             
-        # 3. 提取用户名并绘图
-        user_name = getattr(ev, 'sender', {}).get('nickname') or getattr(ev.sender, 'card', None) or f'用户{user_id}'
-        img_bytes = await draw_fortune_card(user_name, fortune_data)
+        # 【修改点】：直接将 user_id 传给绘图引擎
+        img_bytes = await draw_fortune_card(user_id, fortune_data)
         
         await bot.send(img_bytes)
         

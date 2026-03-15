@@ -145,3 +145,9 @@ async def cleanup_old_fortune_files() -> int:
         except Exception:
             pass
     return count
+
+def get_formatted_date() -> str:
+    """获取参考图风格的格式化日期，例如：2026年03月11日 星期三"""
+    now = datetime.now()
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    return f"{now.strftime('%Y年%m月%d日')} {weekdays[now.weekday()]}"
