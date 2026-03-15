@@ -105,33 +105,30 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     img = Image.new('RGBA', (W, H))
     img.paste(bg, (0, 0))
     
-    # 【核心优化】：先将整张图做一次全局模糊缓存，彻底解决局部截取导致的边缘死黑问题！
-    glass_blur = 18
-    img_blurred = img.filter(ImageFilter.BoxBlur(glass_blur))
+    draw = ImageDraw.Draw(img)
     
-    # 动态获取配置的透明度，如果获取不到默认为 120 (47% 不透明度)
+    # 获取透明度配置 (默认 120，约 47% 不透明)
     try:
         opacity = jrys_config.get_config('panel_opacity').data
     except Exception:
         opacity = 120
 
+    glass_blur = 15
     glass_tint = (20, 20, 25, opacity)
+    
     color_gold = (245, 205, 145, 255)
     color_white = (255, 255, 255, 255)
-    color_gray = (240, 240, 240, 255)       # 提高正文文字的白度
-    color_dark_gray = (230, 230, 230, 200)  # 提高页脚说明的白度，依然保持一点透视感
-    color_dash = (255, 255, 255, 220)       # 虚线提纯，接近纯白
-    
-    draw = ImageDraw.Draw(img)
+    color_dash = (255, 255, 255, 200)       # 虚线提亮
+    color_footer = (255, 255, 255, 245)     # 页脚极致提亮
     
     # 2. 绘制右上角 "今日运势" Badge
+    # 【彻底修复】：独立切割原生底图进行高斯模糊，杜绝边缘混色发灰！
     font_badge = get_font(38)
     badge_w, badge_h = 240, 80
     badge_x, badge_y = W - badge_w - 40, 50
     badge_box = (badge_x, badge_y, badge_x + badge_w, badge_y + badge_h)
     
-    # 直接从全局模糊的图里截取出属于 Badge 的位置，色彩 100% 连贯！
-    b_glass = img_blurred.crop(badge_box)
+    b_glass = img.crop(badge_box).filter(ImageFilter.GaussianBlur(12)) # 使用高斯模糊直采
     b_tint = Image.new('RGBA', b_glass.size, glass_tint)
     b_glass = Image.alpha_composite(b_glass, b_tint)
     
@@ -149,8 +146,7 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     panel_y = H - panel_h - 40
     panel_box = (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
     
-    # 同样的逻辑生成底部面板
-    glass = img_blurred.crop(panel_box)
+    glass = img.crop(panel_box).filter(ImageFilter.BoxBlur(glass_blur))
     tint = Image.new('RGBA', glass.size, glass_tint)
     glass = Image.alpha_composite(glass, tint)
     
@@ -176,15 +172,15 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
         
     # 5. 排版面板内部文字
     center_x = W // 2
-    current_y = panel_y + 80
     
-    # 日期
+    # 日期 (整体往上提)
+    current_y = panel_y + 55
     font_date = get_font(34)
     draw.text((center_x, current_y), get_formatted_date(), font=font_date, fill=color_gold, anchor="mm")
     current_y += 65
     
-    # 运势大字
-    font_huge = get_font(90)
+    # 运势大字 (精确适配日期)
+    font_huge = get_font(72)
     summary_text = fortune_data['fortuneSummary']
     main_char = summary_text[-1] if summary_text else "吉"
     draw.text((center_x, current_y), main_char, font=font_huge, fill=color_white, anchor="mm")
@@ -206,25 +202,37 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     draw.text((center_x, current_y + box1_h // 2 - 2), fortune_data['signText'], font=font_short, fill=color_white, anchor="mm")
     current_y += box1_h + 20
     
-    # 【第二个虚线框】：大签文 
+    # 【第二个虚线框】：大签文 (自适应行距黑科技)
     font_long = get_font(30)
     lines = wrap_text(fortune_data['unsignText'], font_long, box_w - 40)
-    line_height = 45
-    box2_h = len(lines) * line_height + 40
     
-    draw_rounded_dashed_box(draw, (box_x, current_y, box_x + box_w, current_y + box2_h), 15, color_dash, 2, 10)
-    text_start_y = current_y + 20 + line_height // 2
-    for line in lines:
-        draw.text((center_x, text_start_y), line, font=font_long, fill=color_gray, anchor="mm")
-        text_start_y += line_height
+    box2_y = current_y
+    # 底部预留 65px 的绝对空间给页脚，剩余的所有空间全部留给大签文框
+    box2_h = (panel_y + panel_h) - box2_y - 65
+    draw_rounded_dashed_box(draw, (box_x, box2_y, box_x + box_w, box2_y + box2_h), 15, color_dash, 2, 10)
+    
+    if lines:
+        available_h = box2_h - 20  # 框内上下各留出 10px 边距
+        # 弹簧行距：根据行数自动撑开剩余空间
+        line_h = available_h / len(lines)
+        line_h = min(line_h, 55)   # 但限制最大行距为 55，防止只有两行字时被拉得太散
         
+        # 将整个文本块居中悬浮
+        total_text_h = line_h * len(lines)
+        text_start_y = box2_y + (box2_h - total_text_h) / 2 + line_h / 2 - 2
+        
+        for line in lines:
+            draw.text((center_x, text_start_y), line, font=font_long, fill=color_white, anchor="mm")
+            text_start_y += line_h
+            
     # 底部页脚
     font_footer = get_font(26)
     try:
         footer_text = jrys_config.get_config('footer_text').data
     except Exception:
         footer_text = "仅供娱乐哦 | GsCore & GsJrys"
-    draw.text((center_x, panel_y + panel_h - 35), footer_text, font=font_footer, fill=color_dark_gray, anchor="mm")
+        
+    draw.text((center_x, panel_y + panel_h - 35), footer_text, font=font_footer, fill=color_footer, anchor="mm")
         
     buf = BytesIO()
     img.save(buf, format='PNG')
