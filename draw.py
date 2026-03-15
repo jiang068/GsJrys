@@ -1,4 +1,5 @@
 import httpx
+import math
 from pathlib import Path
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -59,17 +60,34 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list:
     if curr: lines.append(curr)
     return lines
 
-def draw_dashed_box(draw: ImageDraw.Draw, box: tuple, fill: tuple, width: int = 2, dash_len: int = 12):
-    """绘制虚线边框"""
-    x1, y1, x2, y2 = box
-    # 横向虚线
-    for x in range(int(x1), int(x2), dash_len * 2):
-        draw.line([(x, y1), (min(x + dash_len, x2), y1)], fill=fill, width=width)
-        draw.line([(x, y2), (min(x + dash_len, x2), y2)], fill=fill, width=width)
-    # 纵向虚线
-    for y in range(int(y1), int(y2), dash_len * 2):
-        draw.line([(x1, y), (x1, min(y + dash_len, y2))], fill=fill, width=width)
-        draw.line([(x2, y), (x2, min(y + dash_len, y2))], fill=fill, width=width)
+def draw_dashed_line(draw: ImageDraw.Draw, pt1: tuple, pt2: tuple, fill: tuple, width: int, dash_len: int):
+    """两点之间绘制虚线"""
+    x1, y1 = pt1
+    x2, y2 = pt2
+    dist = math.hypot(x2 - x1, y2 - y1)
+    if dist <= 0: return
+    dashes = max(1, int(dist / dash_len))
+    for i in range(dashes):
+        if i % 2 == 0:
+            start_x = x1 + (x2 - x1) * i / dashes
+            start_y = y1 + (y2 - y1) * i / dashes
+            end_x = x1 + (x2 - x1) * (i + 1) / dashes
+            end_y = y1 + (y2 - y1) * (i + 1) / dashes
+            draw.line([(start_x, start_y), (end_x, end_y)], fill=fill, width=width)
+
+def draw_rounded_dashed_box(draw: ImageDraw.Draw, xy: tuple, radius: int, fill: tuple, width: int = 2, dash_len: int = 12):
+    """绘制半圆角虚线框：直边虚线 + 纯色圆角过渡"""
+    x1, y1, x2, y2 = xy
+    # 画四条边的虚线
+    draw_dashed_line(draw, (x1+radius, y1), (x2-radius, y1), fill, width, dash_len)
+    draw_dashed_line(draw, (x1+radius, y2), (x2-radius, y2), fill, width, dash_len)
+    draw_dashed_line(draw, (x1, y1+radius), (x1, y2-radius), fill, width, dash_len)
+    draw_dashed_line(draw, (x2, y1+radius), (x2, y2-radius), fill, width, dash_len)
+    # 画四个纯色圆角
+    draw.arc((x1, y1, x1+2*radius, y1+2*radius), 180, 270, fill=fill, width=width)
+    draw.arc((x2-2*radius, y1, x2, y1+2*radius), 270, 360, fill=fill, width=width)
+    draw.arc((x1, y2-2*radius, x1+2*radius, y2), 90, 180, fill=fill, width=width)
+    draw.arc((x2-2*radius, y2-2*radius, x2, y2), 0, 90, fill=fill, width=width)
 
 async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     W, H = 1080, 1920
@@ -91,41 +109,53 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     
     draw = ImageDraw.Draw(img)
     
-    # 2. 绘制右上角 "今日运势" Badge
-    font_badge = get_font(42)
-    badge_w, badge_h = 240, 80
-    badge_x, badge_y = W - badge_w - 50, 60
-    # 纯黑半透明底 + 金色边框
-    draw.rounded_rectangle((badge_x, badge_y, badge_x + badge_w, badge_y + badge_h), 
-                           radius=40, fill=(0, 0, 0, 180), outline=(235, 195, 135, 255), width=3)
-    draw.text((badge_x + badge_w//2, badge_y + badge_h//2 - 2), "今日运势", 
-              font=font_badge, fill=(235, 195, 135, 255), anchor="mm")
+    # [颜色定义] 更加通透的暗态透明度 (Alpha=130, 大约是原来的 60%)
+    glass_blur = 15
+    glass_tint = (20, 20, 25, 130)
+    color_gold = (245, 205, 145, 255)
+    color_white = (255, 255, 255, 255)
+    color_gray = (220, 220, 220, 255)
+    color_dark_gray = (160, 160, 160, 255)
+    color_dash = (255, 255, 255, 100)
     
-    # 3. 生成底部暗态毛玻璃面板
-    panel_w = W - 100
-    panel_x = 50
-    panel_h = 920  # 面板高度
-    panel_y = H - panel_h - 60
+    # 2. 绘制右上角 "今日运势" Badge (同等毛玻璃透明效果)
+    font_badge = get_font(38)
+    badge_w, badge_h = 240, 80
+    badge_x, badge_y = W - badge_w - 40, 50
+    badge_box = (badge_x, badge_y, badge_x + badge_w, badge_y + badge_h)
+    
+    b_glass = img.crop(badge_box).filter(ImageFilter.BoxBlur(glass_blur))
+    b_tint = Image.new('RGBA', b_glass.size, glass_tint)
+    b_glass = Image.alpha_composite(b_glass, b_tint)
+    b_mask = Image.new('L', b_glass.size, 0)
+    ImageDraw.Draw(b_mask).rounded_rectangle((0, 0, badge_w, badge_h), radius=40, fill=255)
+    img.paste(b_glass, (badge_x, badge_y), b_mask)
+    
+    draw.rounded_rectangle(badge_box, radius=40, outline=color_gold, width=3)
+    draw.text((badge_x + badge_w//2, badge_y + badge_h//2 - 2), "今日运势", font=font_badge, fill=color_gold, anchor="mm")
+    
+    # 3. 生成底部暗态毛玻璃面板 (固定为画幅高度的约 1/3)
+    panel_h = 680  
+    panel_x = 30   # 距离边缘更近
+    panel_w = W - 60
+    panel_y = H - panel_h - 40
     panel_box = (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
     
-    # 抠出底部区域模糊并狠狠压暗 (参考图是很深的黑色)
-    glass = img.crop(panel_box).filter(ImageFilter.BoxBlur(18))
-    tint = Image.new('RGBA', glass.size, (20, 20, 25, 220))
+    glass = img.crop(panel_box).filter(ImageFilter.BoxBlur(glass_blur))
+    tint = Image.new('RGBA', glass.size, glass_tint)
     glass = Image.alpha_composite(glass, tint)
     
-    # 圆角遮罩
     mask = Image.new('L', glass.size, 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, glass.size[0], glass.size[1]), radius=50, fill=255)
     img.paste(glass, (panel_x, panel_y), mask)
     
     # 4. 绘制左上角交叠头像
-    avatar_r = 85
-    avatar_cx, avatar_cy = panel_x + 140, panel_y
-    # 先画外圈白底
-    draw.ellipse((avatar_cx - avatar_r - 8, avatar_cy - avatar_r - 8, 
-                  avatar_cx + avatar_r + 8, avatar_cy + avatar_r + 8), fill=(255, 255, 255, 255))
+    avatar_r = 70
+    avatar_cx, avatar_cy = panel_x + 110, panel_y
+    # 白底边框
+    draw.ellipse((avatar_cx - avatar_r - 6, avatar_cy - avatar_r - 6, 
+                  avatar_cx + avatar_r + 6, avatar_cy + avatar_r + 6), fill=color_white)
     
-    # 获取并贴上头像
     avatar_img = await get_avatar_image(user_id)
     if avatar_img:
         avatar_img = avatar_img.resize((avatar_r * 2, avatar_r * 2), Image.Resampling.LANCZOS)
@@ -137,53 +167,53 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
                       avatar_cx + avatar_r, avatar_cy + avatar_r), fill=(200, 200, 200, 255))
         
     # 5. 排版面板内部文字
-    color_gold = (245, 205, 145, 255)
-    color_white = (255, 255, 255, 255)
-    color_gray = (200, 200, 200, 255)
-    color_dark_gray = (130, 130, 130, 255)
     center_x = W // 2
+    current_y = panel_y + 80
     
     # 日期
-    font_date = get_font(38)
-    date_y = panel_y + 90
-    draw.text((center_x, date_y), get_formatted_date(), font=font_date, fill=color_gold, anchor="mm")
+    font_date = get_font(34)
+    draw.text((center_x, current_y), get_formatted_date(), font=font_date, fill=color_gold, anchor="mm")
+    current_y += 65
     
-    # 运势大字 (凶/吉等)
-    font_huge = get_font(180)
-    huge_y = date_y + 140
-    # 提取大字 (例如 "大凶" 提取 "凶", "大吉" 提取 "吉")
+    # 运势大字 (从180缩小至90)
+    font_huge = get_font(90)
     summary_text = fortune_data['fortuneSummary']
     main_char = summary_text[-1] if summary_text else "吉"
-    draw.text((center_x, huge_y), main_char, font=font_huge, fill=color_white, anchor="mm")
+    draw.text((center_x, current_y), main_char, font=font_huge, fill=color_white, anchor="mm")
+    current_y += 75
     
     # 星级
-    font_star = get_font(60)
-    star_y = huge_y + 130
-    draw.text((center_x, star_y), fortune_data['luckyStar'], font=font_star, fill=color_gold, anchor="mm")
+    font_star = get_font(50)
+    draw.text((center_x, current_y), fortune_data['luckyStar'], font=font_star, fill=color_gold, anchor="mm")
+    current_y += 60
     
-    # 虚线框与小签文
-    font_short = get_font(36)
-    box_w = panel_w - 120
-    box_h = 100
-    box_x = panel_x + 60
-    box_y = star_y + 60
-    # 绘制虚线框 (手工虚线完美还原)
-    draw_dashed_box(draw, (box_x, box_y, box_x + box_w, box_y + box_h), fill=(255, 255, 255, 120))
-    # 小签文居中
-    draw.text((center_x, box_y + box_h // 2 - 2), fortune_data['signText'], font=font_short, fill=color_white, anchor="mm")
+    # 虚线框布局设定
+    box_x = panel_x + 40
+    box_w = panel_w - 80
     
-    # 大签文 (自动换行)
-    font_long = get_font(34)
-    long_y = box_y + box_h + 50
-    lines = wrap_text(fortune_data['unsignText'], font_long, box_w)
+    # 【第一个虚线框】：小签文
+    font_short = get_font(34)
+    box1_h = 75
+    draw_rounded_dashed_box(draw, (box_x, current_y, box_x + box_w, current_y + box1_h), 15, color_dash, 2, 10)
+    draw.text((center_x, current_y + box1_h // 2 - 2), fortune_data['signText'], font=font_short, fill=color_white, anchor="mm")
+    current_y += box1_h + 20
+    
+    # 【第二个虚线框】：大签文 (增加虚线边框并自动换行计算高度)
+    font_long = get_font(30)
+    lines = wrap_text(fortune_data['unsignText'], font_long, box_w - 40)
+    line_height = 45
+    box2_h = len(lines) * line_height + 40
+    
+    draw_rounded_dashed_box(draw, (box_x, current_y, box_x + box_w, current_y + box2_h), 15, color_dash, 2, 10)
+    text_start_y = current_y + 20 + line_height // 2
     for line in lines:
-        draw.text((center_x, long_y), line, font=font_long, fill=color_gray, anchor="mm")
-        long_y += 55
+        draw.text((center_x, text_start_y), line, font=font_long, fill=color_gray, anchor="mm")
+        text_start_y += line_height
         
-    # 底部页脚
-    font_footer = get_font(28)
+    # 底部页脚 (绝对定位在面板底部)
+    font_footer = get_font(26)
     footer_text = jrys_config.get_config('footer_text').data
-    draw.text((center_x, panel_y + panel_h - 45), footer_text, font=font_footer, fill=color_dark_gray, anchor="mm")
+    draw.text((center_x, panel_y + panel_h - 35), footer_text, font=font_footer, fill=color_dark_gray, anchor="mm")
         
     buf = BytesIO()
     img.save(buf, format='PNG')
