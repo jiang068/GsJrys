@@ -76,14 +76,12 @@ def draw_dashed_line(draw: ImageDraw.Draw, pt1: tuple, pt2: tuple, fill: tuple, 
             draw.line([(start_x, start_y), (end_x, end_y)], fill=fill, width=width)
 
 def draw_rounded_dashed_box(draw: ImageDraw.Draw, xy: tuple, radius: int, fill: tuple, width: int = 2, dash_len: int = 12):
-    """绘制半圆角虚线框：直边虚线 + 纯色圆角过渡"""
+    """绘制半圆角虚线框"""
     x1, y1, x2, y2 = xy
-    # 画四条边的虚线
     draw_dashed_line(draw, (x1+radius, y1), (x2-radius, y1), fill, width, dash_len)
     draw_dashed_line(draw, (x1+radius, y2), (x2-radius, y2), fill, width, dash_len)
     draw_dashed_line(draw, (x1, y1+radius), (x1, y2-radius), fill, width, dash_len)
     draw_dashed_line(draw, (x2, y1+radius), (x2, y2-radius), fill, width, dash_len)
-    # 画四个纯色圆角
     draw.arc((x1, y1, x1+2*radius, y1+2*radius), 180, 270, fill=fill, width=width)
     draw.arc((x2-2*radius, y1, x2, y1+2*radius), 270, 360, fill=fill, width=width)
     draw.arc((x1, y2-2*radius, x1+2*radius, y2), 90, 180, fill=fill, width=width)
@@ -107,26 +105,36 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     img = Image.new('RGBA', (W, H))
     img.paste(bg, (0, 0))
     
-    draw = ImageDraw.Draw(img)
+    # 【核心优化】：先将整张图做一次全局模糊缓存，彻底解决局部截取导致的边缘死黑问题！
+    glass_blur = 18
+    img_blurred = img.filter(ImageFilter.BoxBlur(glass_blur))
     
-    # [颜色定义] 更加通透的暗态透明度 (Alpha=130, 大约是原来的 60%)
-    glass_blur = 15
-    glass_tint = (20, 20, 25, 130)
+    # 动态获取配置的透明度，如果获取不到默认为 120 (47% 不透明度)
+    try:
+        opacity = jrys_config.get_config('panel_opacity').data
+    except Exception:
+        opacity = 120
+
+    glass_tint = (20, 20, 25, opacity)
     color_gold = (245, 205, 145, 255)
     color_white = (255, 255, 255, 255)
-    color_gray = (220, 220, 220, 255)
-    color_dark_gray = (160, 160, 160, 255)
-    color_dash = (255, 255, 255, 100)
+    color_gray = (240, 240, 240, 255)       # 提高正文文字的白度
+    color_dark_gray = (230, 230, 230, 200)  # 提高页脚说明的白度，依然保持一点透视感
+    color_dash = (255, 255, 255, 220)       # 虚线提纯，接近纯白
     
-    # 2. 绘制右上角 "今日运势" Badge (同等毛玻璃透明效果)
+    draw = ImageDraw.Draw(img)
+    
+    # 2. 绘制右上角 "今日运势" Badge
     font_badge = get_font(38)
     badge_w, badge_h = 240, 80
     badge_x, badge_y = W - badge_w - 40, 50
     badge_box = (badge_x, badge_y, badge_x + badge_w, badge_y + badge_h)
     
-    b_glass = img.crop(badge_box).filter(ImageFilter.BoxBlur(glass_blur))
+    # 直接从全局模糊的图里截取出属于 Badge 的位置，色彩 100% 连贯！
+    b_glass = img_blurred.crop(badge_box)
     b_tint = Image.new('RGBA', b_glass.size, glass_tint)
     b_glass = Image.alpha_composite(b_glass, b_tint)
+    
     b_mask = Image.new('L', b_glass.size, 0)
     ImageDraw.Draw(b_mask).rounded_rectangle((0, 0, badge_w, badge_h), radius=40, fill=255)
     img.paste(b_glass, (badge_x, badge_y), b_mask)
@@ -134,14 +142,15 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     draw.rounded_rectangle(badge_box, radius=40, outline=color_gold, width=3)
     draw.text((badge_x + badge_w//2, badge_y + badge_h//2 - 2), "今日运势", font=font_badge, fill=color_gold, anchor="mm")
     
-    # 3. 生成底部暗态毛玻璃面板 (固定为画幅高度的约 1/3)
+    # 3. 生成底部暗态毛玻璃面板
     panel_h = 680  
-    panel_x = 30   # 距离边缘更近
+    panel_x = 30
     panel_w = W - 60
     panel_y = H - panel_h - 40
     panel_box = (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
     
-    glass = img.crop(panel_box).filter(ImageFilter.BoxBlur(glass_blur))
+    # 同样的逻辑生成底部面板
+    glass = img_blurred.crop(panel_box)
     tint = Image.new('RGBA', glass.size, glass_tint)
     glass = Image.alpha_composite(glass, tint)
     
@@ -152,7 +161,6 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     # 4. 绘制左上角交叠头像
     avatar_r = 70
     avatar_cx, avatar_cy = panel_x + 110, panel_y
-    # 白底边框
     draw.ellipse((avatar_cx - avatar_r - 6, avatar_cy - avatar_r - 6, 
                   avatar_cx + avatar_r + 6, avatar_cy + avatar_r + 6), fill=color_white)
     
@@ -175,7 +183,7 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     draw.text((center_x, current_y), get_formatted_date(), font=font_date, fill=color_gold, anchor="mm")
     current_y += 65
     
-    # 运势大字 (从180缩小至90)
+    # 运势大字
     font_huge = get_font(90)
     summary_text = fortune_data['fortuneSummary']
     main_char = summary_text[-1] if summary_text else "吉"
@@ -198,7 +206,7 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     draw.text((center_x, current_y + box1_h // 2 - 2), fortune_data['signText'], font=font_short, fill=color_white, anchor="mm")
     current_y += box1_h + 20
     
-    # 【第二个虚线框】：大签文 (增加虚线边框并自动换行计算高度)
+    # 【第二个虚线框】：大签文 
     font_long = get_font(30)
     lines = wrap_text(fortune_data['unsignText'], font_long, box_w - 40)
     line_height = 45
@@ -210,9 +218,12 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
         draw.text((center_x, text_start_y), line, font=font_long, fill=color_gray, anchor="mm")
         text_start_y += line_height
         
-    # 底部页脚 (绝对定位在面板底部)
+    # 底部页脚
     font_footer = get_font(26)
-    footer_text = jrys_config.get_config('footer_text').data
+    try:
+        footer_text = jrys_config.get_config('footer_text').data
+    except Exception:
+        footer_text = "仅供娱乐哦 | GsCore & GsJrys"
     draw.text((center_x, panel_y + panel_h - 35), footer_text, font=font_footer, fill=color_dark_gray, anchor="mm")
         
     buf = BytesIO()

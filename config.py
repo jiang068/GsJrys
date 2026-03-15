@@ -11,6 +11,7 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
     'keep_days': GsIntConfig('记录保存天数', '超期的记录将被自动清理以节省空间', 7, 365),
     'enable_auto_cleanup': GsBoolConfig('启用自动清理', '每天有人抽签时顺手清理过期文件', True),
     'footer_text': GsStrConfig('卡片页脚文字', '显示在底部的说明', '仅供娱乐哦 | GsCore & GsJrys'),
+    'panel_opacity': GsIntConfig('黑框不透明度', '毛玻璃黑底的不透明度(0-255，越小越透明)', 120, 255),
     
     'fortune_levels': GsListStrConfig(
         '运势概率与星级配置',
