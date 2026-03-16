@@ -18,6 +18,36 @@ from .draw import draw_fortune_card
 jrys_sv = SV('每日运势')
 _last_cleanup_date = None
 
+def extract_msg_id(resp) -> str:
+    """全能型回执解析器，专门对付各种不规范的底层适配器返回格式"""
+    if not resp: return None
+    if isinstance(resp, dict):
+        if 'message_id' in resp: return str(resp['message_id'])
+        if 'msg_id' in resp: return str(resp['msg_id'])
+        # 针对 OneBot v11 的嵌套格式深度提取
+        if 'data' in resp and isinstance(resp['data'], dict):
+            if 'message_id' in resp['data']: return str(resp['data']['message_id'])
+            if 'msg_id' in resp['data']: return str(resp['data']['msg_id'])
+    elif isinstance(resp, list) and len(resp) > 0:
+        return extract_msg_id(resp[0])
+    elif hasattr(resp, 'message_id'):
+        return str(getattr(resp, 'message_id'))
+    elif hasattr(resp, 'msg_id'):
+        return str(getattr(resp, 'msg_id'))
+    elif isinstance(resp, (str, int)):
+        return str(resp)
+    return None
+
+def extract_reply_id(ev: Event) -> str:
+    """安全提取引用消息的ID"""
+    reply_id = getattr(ev, 'reply', None)
+    if not reply_id and hasattr(ev, 'content'):
+        for msg in ev.content:
+            if getattr(msg, 'type', '') == 'reply':
+                reply_id = getattr(msg, 'data', None)
+                break
+    return str(reply_id) if reply_id else None
+
 @jrys_sv.on_fullmatch(('运势', 'jrys', '今日运势', '抽签'), block=True)
 async def get_fortune(bot: Bot, ev: Event):
     """获取今日运势"""
@@ -38,29 +68,14 @@ async def get_fortune(bot: Bot, ev: Event):
             await save_fortune_record(user_id, today, fortune_data, ev.bot_id)
             
         img_bytes = await draw_fortune_card(user_id, fortune_data)
+        
+        # 接收底层框架发送消息后的回执
         resp = await bot.send(img_bytes)
         
-        # 【核心修复】：全能型 msg_id 解析器，兼容市面上几乎所有适配器的返回值
-        try:
-            msg_id = None
-            if isinstance(resp, dict):
-                msg_id = resp.get('message_id') or resp.get('msg_id')
-            elif isinstance(resp, list) and len(resp) > 0:
-                if isinstance(resp[0], dict):
-                    msg_id = resp[0].get('message_id') or resp[0].get('msg_id')
-                elif hasattr(resp[0], 'message_id'):
-                    msg_id = getattr(resp[0], 'message_id')
-            elif hasattr(resp, 'message_id'):
-                msg_id = getattr(resp, 'message_id')
-            elif hasattr(resp, 'msg_id'):
-                msg_id = getattr(resp, 'msg_id')
-            elif isinstance(resp, (str, int)):
-                msg_id = str(resp)
-
-            if msg_id:
-                await update_fortune_msg_id(user_id, today, str(msg_id))
-        except Exception:
-            pass
+        # 将深层提取出的 msg_id 存入数据库
+        msg_id = extract_msg_id(resp)
+        if msg_id:
+            await update_fortune_msg_id(user_id, today, msg_id)
             
     except Exception as e:
         await bot.send(f'运势获取失败，服务器开了个小差：{e}')
@@ -90,29 +105,12 @@ async def redraw_fortune(bot: Bot, ev: Event):
         await save_fortune_record(user_id, today, new_fortune_data, ev.bot_id, redraw_count=current_redraws + 1)
         
         img_bytes = await draw_fortune_card(user_id, new_fortune_data)
-        resp = await bot.send(img_bytes)
         
-        # 毁签后同样需要更新全新的 msg_id
-        try:
-            msg_id = None
-            if isinstance(resp, dict):
-                msg_id = resp.get('message_id') or resp.get('msg_id')
-            elif isinstance(resp, list) and len(resp) > 0:
-                if isinstance(resp[0], dict):
-                    msg_id = resp[0].get('message_id') or resp[0].get('msg_id')
-                elif hasattr(resp[0], 'message_id'):
-                    msg_id = getattr(resp[0], 'message_id')
-            elif hasattr(resp, 'message_id'):
-                msg_id = getattr(resp, 'message_id')
-            elif hasattr(resp, 'msg_id'):
-                msg_id = getattr(resp, 'msg_id')
-            elif isinstance(resp, (str, int)):
-                msg_id = str(resp)
-
-            if msg_id:
-                await update_fortune_msg_id(user_id, today, str(msg_id))
-        except Exception:
-            pass
+        # 毁签发出的新卡片也要保存回执ID
+        resp = await bot.send(img_bytes)
+        msg_id = extract_msg_id(resp)
+        if msg_id:
+            await update_fortune_msg_id(user_id, today, msg_id)
             
     except Exception as e:
         await bot.send(f'毁签过程出现了小故障：{e}')
@@ -124,14 +122,16 @@ async def send_fortune_bg(bot: Bot, ev: Event):
     record = None
     
     try:
-        # 1. 优先判定：是否对着某张具体的运势卡片进行了“回复”
-        if getattr(ev, 'reply', None):
-            record = await get_fortune_record_by_msg_id(today, str(ev.reply))
-            # 【核心修复】：如果引用了图片但找不到记录，直接明确报错，不再默默降级成发自己的图！
+        reply_id = extract_reply_id(ev)
+        
+        # 1. 如果检测到了引用回复行为
+        if reply_id:
+            record = await get_fortune_record_by_msg_id(today, reply_id)
+            # 【终极修正】：找不到了就直接断言报错，绝对不能降级成拿自己的图！
             if not record:
-                return await bot.send("无法识别该卡片记录！可能是因为机器人中途重启，或发图时间不是今天。请尝试直接 @对方 获取。")
-            
-        # 2. 如果没回复，则按 @ 或本人查询
+                return await bot.send(f"找不到这张卡片(ID: {reply_id})的数据！可能是刚重启漏存了，或者卡片不是今天的，请尝试直接 @对方 获取。")
+                
+        # 2. 如果没有引用，按 @ 或本人查询
         if not record:
             target_id = ev.user_id
             if getattr(ev, 'at_list', None) and len(ev.at_list) > 0:
@@ -142,7 +142,7 @@ async def send_fortune_bg(bot: Bot, ev: Event):
             record = await get_fortune_record(target_id, today)
             
             if not record:
-                if target_id != ev.user_id:
+                if str(target_id) != str(ev.user_id):
                     return await bot.send("这位群友今天还没有抽取运势呢！")
                 else:
                     return await bot.send("你今天还没有抽取运势呢！请先发送【运势】。")
@@ -151,6 +151,7 @@ async def send_fortune_bg(bot: Bot, ev: Event):
         if not bg_path:
             return await bot.send("未能找到对应的背景图数据！")
             
+        # 发送底图
         if bg_path.startswith('http'):
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.get(bg_path)
