@@ -149,7 +149,6 @@ def get_fortune_data() -> Dict[str, Any]:
 def get_date_json_path(date: str) -> Path:
     return USER_DATA_DIR / f"{date}.json"
 
-# 【修改点】增加 redraw_count 参数，默认保存为 0
 async def save_fortune_record(user_id: str, date: str, fortune_data: Dict, bot_id: str, redraw_count: int = 0):
     json_file = get_date_json_path(date)
     data = {}
@@ -177,32 +176,6 @@ async def get_fortune_record(user_id: str, date: str) -> dict:
         try:
             with open(json_file, 'r', encoding='utf-8') as f:
                 return json.load(f).get(str(user_id))
-        except Exception:
-            return None
-    return None
-
-async def update_fortune_msg_id(user_id: str, date: str, msg_id: str):
-    json_file = get_date_json_path(date)
-    if json_file.exists():
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if str(user_id) in data:
-                data[str(user_id)]['msg_id'] = str(msg_id)
-                with open(json_file, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-
-async def get_fortune_record_by_msg_id(date: str, msg_id: str) -> dict:
-    json_file = get_date_json_path(date)
-    if json_file.exists():
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            for uid, record in data.items():
-                if record.get('msg_id') == str(msg_id):
-                    return record
         except Exception:
             return None
     return None

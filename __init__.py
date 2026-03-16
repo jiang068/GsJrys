@@ -9,44 +9,21 @@ from gsuid_core.models import Event
 from .config import jrys_config
 from .utils import (
     get_fortune_data, save_fortune_record, get_fortune_record,
-    cleanup_old_fortune_files, get_fortune_level_config, validate_probabilities,
-    update_fortune_msg_id, get_fortune_record_by_msg_id
+    cleanup_old_fortune_files, get_fortune_level_config, validate_probabilities
 )
 from .draw import draw_fortune_card
 
-# 创建服务
 jrys_sv = SV('每日运势')
 _last_cleanup_date = None
 
-def extract_msg_id(resp) -> str:
-    """全能型回执解析器，专门对付各种不规范的底层适配器返回格式"""
-    if not resp: return None
-    if isinstance(resp, dict):
-        if 'message_id' in resp: return str(resp['message_id'])
-        if 'msg_id' in resp: return str(resp['msg_id'])
-        # 针对 OneBot v11 的嵌套格式深度提取
-        if 'data' in resp and isinstance(resp['data'], dict):
-            if 'message_id' in resp['data']: return str(resp['data']['message_id'])
-            if 'msg_id' in resp['data']: return str(resp['data']['msg_id'])
-    elif isinstance(resp, list) and len(resp) > 0:
-        return extract_msg_id(resp[0])
-    elif hasattr(resp, 'message_id'):
-        return str(getattr(resp, 'message_id'))
-    elif hasattr(resp, 'msg_id'):
-        return str(getattr(resp, 'msg_id'))
-    elif isinstance(resp, (str, int)):
-        return str(resp)
-    return None
-
-def extract_reply_id(ev: Event) -> str:
-    """安全提取引用消息的ID"""
-    reply_id = getattr(ev, 'reply', None)
-    if not reply_id and hasattr(ev, 'content'):
+def has_reply(ev: Event) -> bool:
+    """检查事件中是否包含引用回复"""
+    if getattr(ev, 'reply', None): return True
+    if hasattr(ev, 'content'):
         for msg in ev.content:
             if getattr(msg, 'type', '') == 'reply':
-                reply_id = getattr(msg, 'data', None)
-                break
-    return str(reply_id) if reply_id else None
+                return True
+    return False
 
 @jrys_sv.on_fullmatch(('运势', 'jrys', '今日运势', '抽签'), block=True)
 async def get_fortune(bot: Bot, ev: Event):
@@ -68,14 +45,7 @@ async def get_fortune(bot: Bot, ev: Event):
             await save_fortune_record(user_id, today, fortune_data, ev.bot_id)
             
         img_bytes = await draw_fortune_card(user_id, fortune_data)
-        
-        # 接收底层框架发送消息后的回执
-        resp = await bot.send(img_bytes)
-        
-        # 将深层提取出的 msg_id 存入数据库
-        msg_id = extract_msg_id(resp)
-        if msg_id:
-            await update_fortune_msg_id(user_id, today, msg_id)
+        await bot.send(img_bytes)
             
     except Exception as e:
         await bot.send(f'运势获取失败，服务器开了个小差：{e}')
@@ -105,53 +75,41 @@ async def redraw_fortune(bot: Bot, ev: Event):
         await save_fortune_record(user_id, today, new_fortune_data, ev.bot_id, redraw_count=current_redraws + 1)
         
         img_bytes = await draw_fortune_card(user_id, new_fortune_data)
-        
-        # 毁签发出的新卡片也要保存回执ID
-        resp = await bot.send(img_bytes)
-        msg_id = extract_msg_id(resp)
-        if msg_id:
-            await update_fortune_msg_id(user_id, today, msg_id)
+        await bot.send(img_bytes)
             
     except Exception as e:
         await bot.send(f'毁签过程出现了小故障：{e}')
 
 @jrys_sv.on_fullmatch('运势背景图', block=True)
 async def send_fortune_bg(bot: Bot, ev: Event):
-    """获取运势底图（支持直接发，或@别人，或引用卡片）"""
+    """获取运势底图（支持 @别人，或直接获取自己的）"""
     today = datetime.now().strftime('%Y-%m-%d')
-    record = None
     
     try:
-        reply_id = extract_reply_id(ev)
-        
-        # 1. 如果检测到了引用回复行为
-        if reply_id:
-            record = await get_fortune_record_by_msg_id(today, reply_id)
-            # 【终极修正】：找不到了就直接断言报错，绝对不能降级成拿自己的图！
-            if not record:
-                return await bot.send(f"找不到这张卡片(ID: {reply_id})的数据！可能是刚重启漏存了，或者卡片不是今天的，请尝试直接 @对方 获取。")
-                
-        # 2. 如果没有引用，按 @ 或本人查询
-        if not record:
-            target_id = ev.user_id
-            if getattr(ev, 'at_list', None) and len(ev.at_list) > 0:
-                target_id = ev.at_list[0]
-            elif getattr(ev, 'at', None):
-                target_id = ev.at
-                
-            record = await get_fortune_record(target_id, today)
+        # 如果检测到群友使用了引用回复，委婉提示 GsCore 的限制
+        if has_reply(ev):
+            return await bot.send("由于 GsCore 底层限制，目前无法通过引用卡片来找图哦！\n👉 请直接输入【运势背景图 @对方】来获取别人的神仙底图~")
             
-            if not record:
-                if str(target_id) != str(ev.user_id):
-                    return await bot.send("这位群友今天还没有抽取运势呢！")
-                else:
-                    return await bot.send("你今天还没有抽取运势呢！请先发送【运势】。")
+        # 按照 @ 或本人查询
+        target_id = ev.user_id
+        if getattr(ev, 'at_list', None) and len(ev.at_list) > 0:
+            target_id = ev.at_list[0]
+        elif getattr(ev, 'at', None):
+            target_id = ev.at
+            
+        record = await get_fortune_record(target_id, today)
+        
+        if not record:
+            if str(target_id) != str(ev.user_id):
+                return await bot.send("这位群友今天还没有抽取运势呢！")
+            else:
+                return await bot.send("你今天还没有抽取运势呢！请先发送【运势】。")
 
         bg_path = record['fortune_data'].get('backgroundImage', '')
         if not bg_path:
             return await bot.send("未能找到对应的背景图数据！")
             
-        # 发送底图
+        # 发送原底图
         if bg_path.startswith('http'):
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.get(bg_path)
