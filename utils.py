@@ -6,35 +6,70 @@ from datetime import datetime, timedelta
 
 from .config import jrys_config, STATIC_DIR, USER_DATA_DIR
 
-# 确保动态数据目录存在
 USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def load_fortune_texts() -> Dict[str, List[Dict]]:
-    """加载运势签文数据"""
     data_file = STATIC_DIR / 'jrys.json'
     if data_file.exists():
-        with open(data_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(data_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
     return {}
 
 def get_fortune_level_config() -> List[Dict]:
     levels_config = jrys_config.get_config('fortune_levels').data
     level_list = []
     
-    for item in levels_config:
-        try:
-            name, stars, prob = item.split(':')
-            level_list.append({
-                'name': name.strip(),
-                'stars': stars.strip(),
-                'probability': float(prob.strip())
-            })
-        except Exception:
-            continue
-            
-    # 兜底默认值
+    # 【完美解析】：直接读取新版的字典配置结构 Dict[str, List]
+    if isinstance(levels_config, dict):
+        for name, data_list in levels_config.items():
+            if isinstance(data_list, list) and len(data_list) >= 2:
+                try:
+                    level_list.append({
+                        'name': str(name).strip(),
+                        'stars': str(data_list[0]).strip(),
+                        'probability': float(data_list[1])
+                    })
+                except Exception:
+                    continue
+                    
+    # 【历史包袱兼容】：如果用户的旧配置文件没删，依然用旧的字符串分割法保底
+    elif isinstance(levels_config, list) or isinstance(levels_config, str):
+        if isinstance(levels_config, str):
+            try:
+                import ast
+                levels_config = ast.literal_eval(levels_config)
+            except Exception:
+                levels_config = levels_config.split(',')
+                
+        if isinstance(levels_config, list):
+            for item in levels_config:
+                try:
+                    item_str = str(item).replace('：', ':').strip()
+                    parts = item_str.split(':')
+                    if len(parts) >= 3:
+                        level_list.append({
+                            'name': parts[0].strip(),
+                            'stars': parts[1].strip(),
+                            'probability': float(parts[2].strip())
+                        })
+                except Exception:
+                    continue
+                
+    # 终极兜底：如果用户把配置彻底删烂了，自动恢复完美比例
     if not level_list:
-        level_list = [{'name': '吉', 'stars': '★★★★☆☆☆', 'probability': 100.0}]
+        level_list = [
+            {'name': '大凶', 'stars': '☆☆☆☆☆☆☆', 'probability': 3.0},
+            {'name': '小凶', 'stars': '★☆☆☆☆☆☆', 'probability': 5.0},
+            {'name': '凶', 'stars': '★★☆☆☆☆☆', 'probability': 7.0},
+            {'name': '末吉', 'stars': '★★★☆☆☆☆', 'probability': 10.0},
+            {'name': '吉', 'stars': '★★★★☆☆☆', 'probability': 20.0},
+            {'name': '小吉', 'stars': '★★★★★☆☆', 'probability': 25.0},
+            {'name': '中吉', 'stars': '★★★★★★☆', 'probability': 20.0},
+            {'name': '大吉', 'stars': '★★★★★★★', 'probability': 10.0}
+        ]
     return level_list
 
 def validate_probabilities() -> Tuple[bool, float]:
@@ -43,7 +78,6 @@ def validate_probabilities() -> Tuple[bool, float]:
     return abs(total - 100.0) < 0.01, total
 
 def get_random_background() -> str:
-    """全自动扫描背景图目录，支持本地图片和 txt 网络链接库"""
     bg_folder = STATIC_DIR / 'backgroundFolder'
     if not bg_folder.exists():
         bg_folder.mkdir(parents=True)
@@ -51,14 +85,12 @@ def get_random_background() -> str:
         
     all_bgs = []
     for file in bg_folder.rglob('*'):
-        # 处理纯文本 URL 库
         if file.suffix.lower() == '.txt':
             try:
                 with open(file, 'r', encoding='utf-8') as f:
                     all_bgs.extend([line.strip() for line in f if line.strip() and not line.startswith('#')])
             except Exception:
                 pass
-        # 处理本地图片
         elif file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.bmp']:
             all_bgs.append(str(file))
             
@@ -68,7 +100,6 @@ def get_fortune_data() -> Dict[str, Any]:
     levels = get_fortune_level_config()
     is_valid, total_prob = validate_probabilities()
     
-    # 按权重随机抽选等级
     r = random.uniform(0, total_prob if not is_valid else 100.0)
     current = 0
     selected_lv = levels[-1]
@@ -86,21 +117,26 @@ def get_fortune_data() -> Dict[str, Any]:
         'backgroundImage': get_random_background()
     }
     
-    # 匹配签文
     texts = load_fortune_texts()
     matches = []
     for entries in texts.values():
         for e in entries:
-            if e.get('fortuneSummary') == selected_lv['name'] or e.get('luckyStar') == selected_lv['stars']:
+            if selected_lv['name'] in e.get('fortuneSummary', '') or selected_lv['stars'] == e.get('luckyStar', ''):
                 matches.append(e)
                 
     if matches:
         pick = random.choice(matches)
-        fortune_item['signText'] = pick.get('signText', '运势平稳')
-        fortune_item['unsignText'] = pick.get('unsignText', '顺其自然。')
+        fortune_item['signText'] = pick.get('signText', '运势平稳，诸事顺心')
+        fortune_item['unsignText'] = pick.get('unsignText', '今日运势较佳，保持积极的心态。')
     else:
-        fortune_item['signText'] = '运势未明，顺其自然'
-        fortune_item['unsignText'] = '保持平常心，今天也是充实的一天。'
+        default_texts = {
+            '大吉': ('鸿运当头，万事亨通', '今日运势极佳，是非常适合做重要决定和开始新事业的日子。'),
+            '中吉': ('吉星照耀，诸事顺遂', '今日运势很好，工作上容易得到贵人帮助，稳步前行即可。'),
+            '大凶': ('运势低迷，宜静不宜动', '今日运势较差，建议尽量减少外出和重要活动，谨言慎行。')
+        }
+        dt = default_texts.get(selected_lv['name'], ('运势未明，顺其自然', '保持平常心，今天也是充实的一天。'))
+        fortune_item['signText'] = dt[0]
+        fortune_item['unsignText'] = dt[1]
         
     return fortune_item
 
@@ -110,9 +146,13 @@ def get_date_json_path(date: str) -> Path:
 async def save_fortune_record(user_id: str, date: str, fortune_data: Dict, bot_id: str):
     json_file = get_date_json_path(date)
     data = {}
+    
     if json_file.exists():
-        with open(json_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            pass
             
     data[str(user_id)] = {
         'fortune_data': fortune_data,
@@ -126,8 +166,11 @@ async def save_fortune_record(user_id: str, date: str, fortune_data: Dict, bot_i
 async def get_fortune_record(user_id: str, date: str) -> dict:
     json_file = get_date_json_path(date)
     if json_file.exists():
-        with open(json_file, 'r', encoding='utf-8') as f:
-            return json.load(f).get(str(user_id))
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                return json.load(f).get(str(user_id))
+        except Exception:
+            return None
     return None
 
 async def cleanup_old_fortune_files() -> int:
