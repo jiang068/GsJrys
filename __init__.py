@@ -10,7 +10,7 @@ from .config import jrys_config
 from .utils import (
     get_fortune_data, save_fortune_record, get_fortune_record,
     cleanup_old_fortune_files, get_fortune_level_config, validate_probabilities,
-    update_fortune_msg_id, get_fortune_record_by_msg_id  # 引入新增的库
+    update_fortune_msg_id, get_fortune_record_by_msg_id
 )
 from .draw import draw_fortune_card
 
@@ -38,18 +38,14 @@ async def get_fortune(bot: Bot, ev: Event):
             await save_fortune_record(user_id, today, fortune_data, ev.bot_id)
             
         img_bytes = await draw_fortune_card(user_id, fortune_data)
-        
-        # 接收机器人发图后平台返回的收据
         resp = await bot.send(img_bytes)
         
-        # 尝试提取 message_id 并存档，以便别人引用这张图时能找到它
         try:
             msg_id = None
             if isinstance(resp, list) and len(resp) > 0:
                 resp = resp[0]
             if isinstance(resp, dict):
                 msg_id = resp.get('message_id') or resp.get('msg_id')
-            
             if msg_id:
                 await update_fortune_msg_id(user_id, today, str(msg_id))
         except Exception:
@@ -58,18 +54,66 @@ async def get_fortune(bot: Bot, ev: Event):
     except Exception as e:
         await bot.send(f'运势获取失败，服务器开了个小差：{e}')
 
+# ================= 【新增】毁签逆天改命功能 =================
+@jrys_sv.on_fullmatch('毁签', block=True)
+async def redraw_fortune(bot: Bot, ev: Event):
+    """销毁当前运势，重新抽取"""
+    user_id = ev.user_id
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    try:
+        limit = jrys_config.get_config('redraw_limit').data
+        empty_msg = jrys_config.get_config('redraw_empty_message').data
+        
+        # 1. 检查配置，如果不允许毁签，直接发送耗尽提示
+        if limit <= 0:
+            return await bot.send(empty_msg)
+            
+        record = await get_fortune_record(user_id, today)
+        if not record:
+            return await bot.send("你今天还没抽过运势呢！请先发送【运势】。")
+            
+        # 2. 检查用户的已毁签次数
+        current_redraws = record.get('redraw_count', 0)
+        if current_redraws >= limit:
+            return await bot.send(empty_msg)
+            
+        # 3. 额度足够，直接重新抽取崭新运势（运势与底图全换）
+        new_fortune_data = get_fortune_data()
+        
+        # 4. 覆盖写入旧记录，并将已毁签次数 +1
+        await save_fortune_record(user_id, today, new_fortune_data, ev.bot_id, redraw_count=current_redraws + 1)
+        
+        # 5. 直接发出崭新的运势卡片（不需要提示已毁签）
+        img_bytes = await draw_fortune_card(user_id, new_fortune_data)
+        resp = await bot.send(img_bytes)
+        
+        # 同样刷新卡片的 msg_id 存档，确保“运势背景图”查找到的是新图
+        try:
+            msg_id = None
+            if isinstance(resp, list) and len(resp) > 0:
+                resp = resp[0]
+            if isinstance(resp, dict):
+                msg_id = resp.get('message_id') or resp.get('msg_id')
+            if msg_id:
+                await update_fortune_msg_id(user_id, today, str(msg_id))
+        except Exception:
+            pass
+            
+    except Exception as e:
+        await bot.send(f'毁签过程出现了小故障：{e}')
+
+# ================= 运势背景图提取 =================
 @jrys_sv.on_fullmatch('运势背景图', block=True)
 async def send_fortune_bg(bot: Bot, ev: Event):
-    """获取运势底图（支持引用卡片、@别人、或直接获取自己的）"""
+    """获取运势底图（支持直接发，或@别人）"""
     today = datetime.now().strftime('%Y-%m-%d')
     record = None
     
     try:
-        # 1. 优先判定：是否对着某张具体的运势卡片进行了“回复”
         if getattr(ev, 'reply', None):
             record = await get_fortune_record_by_msg_id(today, str(ev.reply))
             
-        # 2. 如果没回复（或者回复的不是当天的运势卡），则按 @ 或本人查询
         if not record:
             target_id = ev.user_id
             if getattr(ev, 'at_list', None) and len(ev.at_list) > 0:
@@ -89,7 +133,6 @@ async def send_fortune_bg(bot: Bot, ev: Event):
         if not bg_path:
             return await bot.send("未能找到对应的背景图数据！")
             
-        # 3. 发送原底图
         if bg_path.startswith('http'):
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.get(bg_path)
@@ -105,6 +148,7 @@ async def send_fortune_bg(bot: Bot, ev: Event):
     except Exception as e:
         await bot.send(f"获取背景图失败：{e}")
 
+# ================= 管理员命令 =================
 @jrys_sv.on_fullmatch('清理运势记录', block=True)
 async def clean_fortune_records(bot: Bot, ev: Event):
     if ev.user_pm > 2:

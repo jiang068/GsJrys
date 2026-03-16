@@ -149,7 +149,8 @@ def get_fortune_data() -> Dict[str, Any]:
 def get_date_json_path(date: str) -> Path:
     return USER_DATA_DIR / f"{date}.json"
 
-async def save_fortune_record(user_id: str, date: str, fortune_data: Dict, bot_id: str):
+# 【修改点】增加 redraw_count 参数，默认保存为 0
+async def save_fortune_record(user_id: str, date: str, fortune_data: Dict, bot_id: str, redraw_count: int = 0):
     json_file = get_date_json_path(date)
     data = {}
     
@@ -163,6 +164,7 @@ async def save_fortune_record(user_id: str, date: str, fortune_data: Dict, bot_i
     data[str(user_id)] = {
         'fortune_data': fortune_data,
         'bot_id': bot_id,
+        'redraw_count': redraw_count,
         'created_at': datetime.now().isoformat()
     }
     
@@ -179,9 +181,7 @@ async def get_fortune_record(user_id: str, date: str) -> dict:
             return None
     return None
 
-# ================= 【新增】为拿背景图准备的消息ID存档功能 =================
 async def update_fortune_msg_id(user_id: str, date: str, msg_id: str):
-    """将机器人发出的卡片消息ID更新到用户的当天记录中"""
     json_file = get_date_json_path(date)
     if json_file.exists():
         try:
@@ -195,7 +195,6 @@ async def update_fortune_msg_id(user_id: str, date: str, msg_id: str):
             pass
 
 async def get_fortune_record_by_msg_id(date: str, msg_id: str) -> dict:
-    """通过引用回复的消息ID反查这是谁的运势记录"""
     json_file = get_date_json_path(date)
     if json_file.exists():
         try:
@@ -207,7 +206,6 @@ async def get_fortune_record_by_msg_id(date: str, msg_id: str) -> dict:
         except Exception:
             return None
     return None
-# =====================================================================
 
 async def cleanup_old_fortune_files() -> int:
     keep_days = jrys_config.get_config('keep_days').data
@@ -226,7 +224,6 @@ async def cleanup_old_fortune_files() -> int:
     return count
 
 def get_formatted_date() -> str:
-    """获取参考图风格的格式化日期"""
     now = datetime.now()
     weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
     return f"{now.strftime('%Y年%m月%d日')} {weekdays[now.weekday()]}"

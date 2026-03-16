@@ -13,7 +13,11 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
     'footer_text': GsStrConfig('卡片页脚文字', '显示在底部的说明', '仅供娱乐哦 | GsCore & GsJrys'),
     'panel_opacity': GsIntConfig('黑框不透明度', '毛玻璃黑底的不透明度(0-255，越小越透明)', 120, 255),
     
-    # 还原回 GsListStrConfig，保证网页控制台绝对能显示！
+    # ================= 新增毁签相关配置 =================
+    'redraw_limit': GsIntConfig('每日毁签次数', '每人每天可以重新抽取运势的次数，0为不可毁签', 1, 10),
+    'redraw_empty_message': GsStrConfig('毁签次数耗尽提示', '毁签次数用完时的回复文本', '你的毁签次数已用完，请明天再来吧！'),
+    # ====================================================
+
     'fortune_levels': GsListStrConfig(
         '运势概率与星级配置',
         '格式 => 运势名称:星级符号:抽中概率(%)。即使不小心打成中文冒号，系统也会自动修复！',
