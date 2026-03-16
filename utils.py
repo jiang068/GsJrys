@@ -103,19 +103,16 @@ def get_fortune_data() -> Dict[str, Any]:
             selected_lv = lv
             break
             
-    # 初始化基础运势信息
     fortune_item = {
-        'fortuneSummary': selected_lv['name'],  # 默认使用配置中的名字，例如 "大吉"
+        'fortuneSummary': selected_lv['name'], 
         'luckyStar': selected_lv['stars'],
         'luckValue': int(selected_lv['probability']),
         'backgroundImage': get_random_background()
     }
     
-    # 终极匹配逻辑：扁平化 JSON 数据池，寻找包含关键字的条目
     texts = load_fortune_texts()
     matches = []
     
-    # 获取目标匹配词（例如，把配置里的 "大吉" 拿去 json 的 fortuneSummary 里搜）
     target_name = selected_lv['name']
     target_stars = selected_lv['stars']
     
@@ -123,19 +120,13 @@ def get_fortune_data() -> Dict[str, Any]:
         for e in entries:
             json_name = e.get('fortuneSummary', '')
             json_stars = e.get('luckyStar', '')
-            
-            # 【核心修复】：只要 json 里的名字包含了抽取的名字（比如 "大吉+财运" 包含 "大吉"）
-            # 或者星级完全一致，就放入备选池！
             if target_name in json_name or target_stars == json_stars:
                 matches.append(e)
                 
     if matches:
         pick = random.choice(matches)
-        
-        # 【画龙点睛】：如果抽中了带后缀的特殊签（比如大吉+才艺），直接覆盖原本普通的 "大吉" 标题！
         if pick.get('fortuneSummary'):
             fortune_item['fortuneSummary'] = pick['fortuneSummary']
-            
         fortune_item['signText'] = pick.get('signText', '运势平稳，诸事顺心')
         fortune_item['unsignText'] = pick.get('unsignText', '今日运势较佳，保持积极的心态。')
     else:
@@ -188,6 +179,36 @@ async def get_fortune_record(user_id: str, date: str) -> dict:
             return None
     return None
 
+# ================= 【新增】为拿背景图准备的消息ID存档功能 =================
+async def update_fortune_msg_id(user_id: str, date: str, msg_id: str):
+    """将机器人发出的卡片消息ID更新到用户的当天记录中"""
+    json_file = get_date_json_path(date)
+    if json_file.exists():
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if str(user_id) in data:
+                data[str(user_id)]['msg_id'] = str(msg_id)
+                with open(json_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+async def get_fortune_record_by_msg_id(date: str, msg_id: str) -> dict:
+    """通过引用回复的消息ID反查这是谁的运势记录"""
+    json_file = get_date_json_path(date)
+    if json_file.exists():
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            for uid, record in data.items():
+                if record.get('msg_id') == str(msg_id):
+                    return record
+        except Exception:
+            return None
+    return None
+# =====================================================================
+
 async def cleanup_old_fortune_files() -> int:
     keep_days = jrys_config.get_config('keep_days').data
     cutoff = datetime.now() - timedelta(days=keep_days)
@@ -205,7 +226,7 @@ async def cleanup_old_fortune_files() -> int:
     return count
 
 def get_formatted_date() -> str:
-    """获取参考图风格的格式化日期，例如：2026年03月11日 星期三"""
+    """获取参考图风格的格式化日期"""
     now = datetime.now()
     weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
     return f"{now.strftime('%Y年%m月%d日')} {weekdays[now.weekday()]}"
