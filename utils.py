@@ -1,232 +1,211 @@
-import httpx
-import math
+import json
+import random
 from pathlib import Path
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
-from .config import jrys_config, STATIC_DIR
-from .utils import get_formatted_date
+from typing import Dict, Any, List, Tuple
+from datetime import datetime, timedelta
 
-_font_cache = {}
-_avatar_cache = {}
+from .config import jrys_config, STATIC_DIR, USER_DATA_DIR
 
-def get_font(size: int) -> ImageFont.FreeTypeFont:
-    if size in _font_cache:
-        return _font_cache[size]
-    font_file = STATIC_DIR / 'AaTianMeiXinDongNaiLaoTi-2.ttf'
-    font = ImageFont.truetype(str(font_file), size) if font_file.exists() else ImageFont.load_default()
-    _font_cache[size] = font
-    return font
+USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-async def load_image_from_url(url: str, timeout: int = 10) -> Image.Image:
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return Image.open(BytesIO(resp.content)).convert('RGBA')
-    except Exception:
-        return None
+def load_fortune_texts() -> Dict[str, List[Dict]]:
+    data_file = STATIC_DIR / 'jrys.json'
+    if data_file.exists():
+        try:
+            with open(data_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
 
-async def get_avatar_image(user_id: str) -> Image.Image:
-    """获取并缓存QQ头像"""
-    if user_id in _avatar_cache:
-        return _avatar_cache[user_id]
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            res = await client.get(f"http://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640")
-            if res.status_code == 200:
-                img = Image.open(BytesIO(res.content)).convert('RGBA')
-                _avatar_cache[user_id] = img
-                return img
-    except Exception:
-        pass
+def get_fortune_level_config() -> List[Dict]:
+    levels_config = jrys_config.get_config('fortune_levels').data
+    level_list = []
+    
+    if isinstance(levels_config, list):
+        for item in levels_config:
+            try:
+                item_str = str(item).replace('：', ':').strip()
+                parts = item_str.split(':')
+                if len(parts) >= 3:
+                    level_list.append({
+                        'name': parts[0].strip(),
+                        'stars': parts[1].strip(),
+                        'probability': float(parts[2].strip())
+                    })
+            except Exception:
+                continue
+    elif isinstance(levels_config, str):
+        try:
+            import ast
+            parsed = ast.literal_eval(levels_config)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    item_str = str(item).replace('：', ':').strip()
+                    parts = item_str.split(':')
+                    if len(parts) >= 3:
+                        level_list.append({
+                            'name': parts[0].strip(),
+                            'stars': parts[1].strip(),
+                            'probability': float(parts[2].strip())
+                        })
+        except Exception:
+            pass
+            
+    if not level_list:
+        level_list = [
+            {'name': '大凶', 'stars': '☆☆☆☆☆☆☆', 'probability': 3.0},
+            {'name': '小凶', 'stars': '★☆☆☆☆☆☆', 'probability': 5.0},
+            {'name': '凶', 'stars': '★★☆☆☆☆☆', 'probability': 7.0},
+            {'name': '末吉', 'stars': '★★★☆☆☆☆', 'probability': 10.0},
+            {'name': '吉', 'stars': '★★★★☆☆☆', 'probability': 20.0},
+            {'name': '小吉', 'stars': '★★★★★☆☆', 'probability': 25.0},
+            {'name': '中吉', 'stars': '★★★★★★☆', 'probability': 20.0},
+            {'name': '大吉', 'stars': '★★★★★★★', 'probability': 10.0}
+        ]
+    return level_list
+
+def validate_probabilities() -> Tuple[bool, float]:
+    lvls = get_fortune_level_config()
+    total = sum(l['probability'] for l in lvls)
+    return abs(total - 100.0) < 0.01, total
+
+def get_random_background() -> str:
+    bg_folder = STATIC_DIR / 'backgroundFolder'
+    if not bg_folder.exists():
+        bg_folder.mkdir(parents=True)
+        return ""
+        
+    all_bgs = []
+    for file in bg_folder.rglob('*'):
+        if file.suffix.lower() == '.txt':
+            try:
+                with open(file, 'r', encoding='utf-8') as f:
+                    all_bgs.extend([line.strip() for line in f if line.strip() and not line.startswith('#')])
+            except Exception:
+                pass
+        elif file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.bmp']:
+            all_bgs.append(str(file))
+            
+    return random.choice(all_bgs) if all_bgs else ""
+
+def get_fortune_data() -> Dict[str, Any]:
+    levels = get_fortune_level_config()
+    is_valid, total_prob = validate_probabilities()
+    
+    r = random.uniform(0, total_prob if not is_valid else 100.0)
+    current = 0
+    selected_lv = levels[-1]
+    
+    for lv in levels:
+        current += lv['probability']
+        if r <= current:
+            selected_lv = lv
+            break
+            
+    # 初始化基础运势信息
+    fortune_item = {
+        'fortuneSummary': selected_lv['name'],  # 默认使用配置中的名字，例如 "大吉"
+        'luckyStar': selected_lv['stars'],
+        'luckValue': int(selected_lv['probability']),
+        'backgroundImage': get_random_background()
+    }
+    
+    # 终极匹配逻辑：扁平化 JSON 数据池，寻找包含关键字的条目
+    texts = load_fortune_texts()
+    matches = []
+    
+    # 获取目标匹配词（例如，把配置里的 "大吉" 拿去 json 的 fortuneSummary 里搜）
+    target_name = selected_lv['name']
+    target_stars = selected_lv['stars']
+    
+    for entries in texts.values():
+        for e in entries:
+            json_name = e.get('fortuneSummary', '')
+            json_stars = e.get('luckyStar', '')
+            
+            # 【核心修复】：只要 json 里的名字包含了抽取的名字（比如 "大吉+财运" 包含 "大吉"）
+            # 或者星级完全一致，就放入备选池！
+            if target_name in json_name or target_stars == json_stars:
+                matches.append(e)
+                
+    if matches:
+        pick = random.choice(matches)
+        
+        # 【画龙点睛】：如果抽中了带后缀的特殊签（比如大吉+才艺），直接覆盖原本普通的 "大吉" 标题！
+        if pick.get('fortuneSummary'):
+            fortune_item['fortuneSummary'] = pick['fortuneSummary']
+            
+        fortune_item['signText'] = pick.get('signText', '运势平稳，诸事顺心')
+        fortune_item['unsignText'] = pick.get('unsignText', '今日运势较佳，保持积极的心态。')
+    else:
+        default_texts = {
+            '大吉': ('鸿运当头，万事亨通', '今日运势极佳，是非常适合做重要决定和开始新事业的日子。'),
+            '中吉': ('吉星照耀，诸事顺遂', '今日运势很好，工作上容易得到贵人帮助，稳步前行即可。'),
+            '小吉': ('小有收获，步步为营', '今日运势不错，稳中求进，会有意想不到的收获。'),
+            '吉': ('运势平稳，诸事顺心', '今日生活工作顺心，没有特别大的惊喜，也不会遇到阻碍。'),
+            '末吉': ('谨慎行事，量力而为', '建议保持谨慎，专注手头工作，不宜冒进。'),
+            '凶': ('诸事不顺，小心谨慎', '今日运势偏差，建议保持低调，避免与他人发生冲突。'),
+            '小凶': ('运势欠佳，凡事小心', '容易遇到小的挫折，建议推迟重要决定，保持耐心。'),
+            '大凶': ('运势低迷，宜静不宜动', '今日运势较差，建议尽量减少外出和重要活动，谨言慎行。')
+        }
+        dt = default_texts.get(target_name, ('运势未明，顺其自然', '保持平常心，今天也是充实的一天。'))
+        fortune_item['signText'] = dt[0]
+        fortune_item['unsignText'] = dt[1]
+        
+    return fortune_item
+
+def get_date_json_path(date: str) -> Path:
+    return USER_DATA_DIR / f"{date}.json"
+
+async def save_fortune_record(user_id: str, date: str, fortune_data: Dict, bot_id: str):
+    json_file = get_date_json_path(date)
+    data = {}
+    
+    if json_file.exists():
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            pass
+            
+    data[str(user_id)] = {
+        'fortune_data': fortune_data,
+        'bot_id': bot_id,
+        'created_at': datetime.now().isoformat()
+    }
+    
+    with open(json_file, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+async def get_fortune_record(user_id: str, date: str) -> dict:
+    json_file = get_date_json_path(date)
+    if json_file.exists():
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                return json.load(f).get(str(user_id))
+        except Exception:
+            return None
     return None
 
-def crop_center_img(img: Image.Image, width: int, height: int) -> Image.Image:
-    orig_w, orig_h = img.size
-    scale = max(width / orig_w, height / orig_h)
-    new_w, new_h = int(orig_w * scale), int(orig_h * scale)
-    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-    left, top = (new_w - width) // 2, (new_h - height) // 2
-    return img.crop((left, top, left + width, top + height))
+async def cleanup_old_fortune_files() -> int:
+    keep_days = jrys_config.get_config('keep_days').data
+    cutoff = datetime.now() - timedelta(days=keep_days)
+    count = 0
+    
+    for file in USER_DATA_DIR.glob('*.json'):
+        if file.name == 'config.json': continue
+        try:
+            file_date = datetime.strptime(file.stem, '%Y-%m-%d')
+            if file_date < cutoff:
+                file.unlink()
+                count += 1
+        except Exception:
+            pass
+    return count
 
-def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list:
-    lines, curr = [], ""
-    for char in text:
-        if font.getlength(curr + char) <= max_width:
-            curr += char
-        else:
-            lines.append(curr)
-            curr = char
-    if curr: lines.append(curr)
-    return lines
-
-def draw_dashed_line(draw: ImageDraw.Draw, pt1: tuple, pt2: tuple, fill: tuple, width: int, dash_len: int):
-    """两点之间绘制虚线"""
-    x1, y1 = pt1
-    x2, y2 = pt2
-    dist = math.hypot(x2 - x1, y2 - y1)
-    if dist <= 0: return
-    dashes = max(1, int(dist / dash_len))
-    for i in range(dashes):
-        if i % 2 == 0:
-            start_x = x1 + (x2 - x1) * i / dashes
-            start_y = y1 + (y2 - y1) * i / dashes
-            end_x = x1 + (x2 - x1) * (i + 1) / dashes
-            end_y = y1 + (y2 - y1) * (i + 1) / dashes
-            draw.line([(start_x, start_y), (end_x, end_y)], fill=fill, width=width)
-
-def draw_rounded_dashed_box(draw: ImageDraw.Draw, xy: tuple, radius: int, fill: tuple, width: int = 2, dash_len: int = 12):
-    """绘制半圆角虚线框"""
-    x1, y1, x2, y2 = xy
-    draw_dashed_line(draw, (x1+radius, y1), (x2-radius, y1), fill, width, dash_len)
-    draw_dashed_line(draw, (x1+radius, y2), (x2-radius, y2), fill, width, dash_len)
-    draw_dashed_line(draw, (x1, y1+radius), (x1, y2-radius), fill, width, dash_len)
-    draw_dashed_line(draw, (x2, y1+radius), (x2, y2-radius), fill, width, dash_len)
-    draw.arc((x1, y1, x1+2*radius, y1+2*radius), 180, 270, fill=fill, width=width)
-    draw.arc((x2-2*radius, y1, x2, y1+2*radius), 270, 360, fill=fill, width=width)
-    draw.arc((x1, y2-2*radius, x1+2*radius, y2), 90, 180, fill=fill, width=width)
-    draw.arc((x2-2*radius, y2-2*radius, x2, y2), 0, 90, fill=fill, width=width)
-
-async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
-    W, H = 1080, 1920
-    
-    # 1. 加载并处理背景图
-    bg_path = fortune_data.get('backgroundImage', '')
-    bg = None
-    if bg_path:
-        if bg_path.startswith('http'):
-            bg = await load_image_from_url(bg_path)
-        elif Path(bg_path).exists():
-            bg = Image.open(bg_path).convert('RGBA')
-    if not bg:
-        bg = Image.new('RGBA', (W, H), (161, 196, 253, 255))
-        
-    bg = crop_center_img(bg, W, H)
-    img = Image.new('RGBA', (W, H))
-    img.paste(bg, (0, 0))
-    
-    draw = ImageDraw.Draw(img)
-    
-    # 获取透明度配置
-    try:
-        opacity = jrys_config.get_config('panel_opacity').data
-    except Exception:
-        opacity = 120
-
-    glass_blur = 15
-    glass_tint = (20, 20, 25, opacity)
-    
-    color_gold = (245, 205, 145, 255)
-    color_white = (255, 255, 255, 255)
-    color_dash = (255, 255, 255, 200)       
-    color_footer = (255, 255, 255, 245)     
-    
-    # 2. 绘制右上角 "今日运势" Badge
-    font_badge = get_font(38)
-    badge_w, badge_h = 240, 80
-    badge_x, badge_y = W - badge_w - 40, 50
-    badge_box = (badge_x, badge_y, badge_x + badge_w, badge_y + badge_h)
-    
-    b_glass = img.crop(badge_box).filter(ImageFilter.GaussianBlur(12)) 
-    b_tint = Image.new('RGBA', b_glass.size, glass_tint)
-    b_glass = Image.alpha_composite(b_glass, b_tint)
-    
-    b_mask = Image.new('L', b_glass.size, 0)
-    ImageDraw.Draw(b_mask).rounded_rectangle((0, 0, badge_w, badge_h), radius=40, fill=255)
-    img.paste(b_glass, (badge_x, badge_y), b_mask)
-    
-    draw.rounded_rectangle(badge_box, radius=40, outline=color_gold, width=3)
-    draw.text((badge_x + badge_w//2, badge_y + badge_h//2 - 2), "今日运势", font=font_badge, fill=color_gold, anchor="mm")
-    
-    # 3. 生成底部面板
-    panel_h = 680  
-    panel_x = 30
-    panel_w = W - 60
-    panel_y = H - panel_h - 40
-    panel_box = (panel_x, panel_y, panel_x + panel_w, panel_y + panel_h)
-    
-    glass = img.crop(panel_box).filter(ImageFilter.BoxBlur(glass_blur))
-    tint = Image.new('RGBA', glass.size, glass_tint)
-    glass = Image.alpha_composite(glass, tint)
-    
-    mask = Image.new('L', glass.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, glass.size[0], glass.size[1]), radius=50, fill=255)
-    img.paste(glass, (panel_x, panel_y), mask)
-    
-    # 4. 绘制头像
-    avatar_r = 70
-    avatar_cx, avatar_cy = panel_x + 110, panel_y
-    draw.ellipse((avatar_cx - avatar_r - 6, avatar_cy - avatar_r - 6, 
-                  avatar_cx + avatar_r + 6, avatar_cy + avatar_r + 6), fill=color_white)
-    
-    avatar_img = await get_avatar_image(user_id)
-    if avatar_img:
-        avatar_img = avatar_img.resize((avatar_r * 2, avatar_r * 2), Image.Resampling.LANCZOS)
-        av_mask = Image.new('L', (avatar_r * 2, avatar_r * 2), 0)
-        ImageDraw.Draw(av_mask).ellipse((0, 0, avatar_r * 2, avatar_r * 2), fill=255)
-        img.paste(avatar_img, (avatar_cx - avatar_r, avatar_cy - avatar_r), av_mask)
-    else:
-        draw.ellipse((avatar_cx - avatar_r, avatar_cy - avatar_r, 
-                      avatar_cx + avatar_r, avatar_cy + avatar_r), fill=(200, 200, 200, 255))
-        
-    # 5. 排版面板内部文字
-    center_x = W // 2
-    
-    # 日期 
-    current_y = panel_y + 55
-    font_date = get_font(34)
-    draw.text((center_x, current_y), get_formatted_date(), font=font_date, fill=color_gold, anchor="mm")
-    current_y += 55 
-    
-    # 【核心修复】：不再强行截取最后一个字！直接全量居中输出 JSON 配置里的完整标题！
-    font_huge = get_font(72)
-    summary_text = fortune_data.get('fortuneSummary', '吉')
-    draw.text((center_x, current_y), summary_text, font=font_huge, fill=color_white, anchor="mm")
-    current_y += 65 
-    
-    # 星级
-    font_star = get_font(50)
-    draw.text((center_x, current_y), fortune_data['luckyStar'], font=font_star, fill=color_gold, anchor="mm")
-    current_y += 60
-    
-    box_x = panel_x + 40
-    box_w = panel_w - 80
-    
-    # 小签文框
-    font_short = get_font(34)
-    box1_h = 75
-    draw_rounded_dashed_box(draw, (box_x, current_y, box_x + box_w, current_y + box1_h), 15, color_dash, 2, 10)
-    draw.text((center_x, current_y + box1_h // 2 - 2), fortune_data['signText'], font=font_short, fill=color_white, anchor="mm")
-    current_y += box1_h + 20
-    
-    # 大签文框
-    font_long = get_font(30)
-    lines = wrap_text(fortune_data['unsignText'], font_long, box_w - 40)
-    
-    box2_y = current_y
-    box2_h = (panel_y + panel_h) - box2_y - 65
-    draw_rounded_dashed_box(draw, (box_x, box2_y, box_x + box_w, box2_y + box2_h), 15, color_dash, 2, 10)
-    
-    if lines:
-        available_h = box2_h - 20 
-        line_h = available_h / len(lines)
-        line_h = min(line_h, 55)   
-        total_text_h = line_h * len(lines)
-        text_start_y = box2_y + (box2_h - total_text_h) / 2 + line_h / 2 - 2
-        
-        for line in lines:
-            draw.text((center_x, text_start_y), line, font=font_long, fill=color_white, anchor="mm")
-            text_start_y += line_h
-            
-    # 底部页脚
-    font_footer = get_font(26)
-    try:
-        footer_text = jrys_config.get_config('footer_text').data
-    except Exception:
-        footer_text = "仅供娱乐哦 | GsCore & GsJrys"
-        
-    draw.text((center_x, panel_y + panel_h - 35), footer_text, font=font_footer, fill=color_footer, anchor="mm")
-        
-    buf = BytesIO()
-    img.save(buf, format='PNG')
-    return buf.getvalue()
+def get_formatted_date() -> str:
+    """获取参考图风格的格式化日期，例如：2026年03月11日 星期三"""
+    now = datetime.now()
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    return f"{now.strftime('%Y年%m月%d日')} {weekdays[now.weekday()]}"

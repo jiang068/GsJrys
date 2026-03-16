@@ -107,7 +107,7 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     
     draw = ImageDraw.Draw(img)
     
-    # 获取透明度配置 (默认 120，约 47% 不透明)
+    # 获取透明度配置
     try:
         opacity = jrys_config.get_config('panel_opacity').data
     except Exception:
@@ -118,17 +118,16 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     
     color_gold = (245, 205, 145, 255)
     color_white = (255, 255, 255, 255)
-    color_dash = (255, 255, 255, 200)       # 虚线提亮
-    color_footer = (255, 255, 255, 245)     # 页脚极致提亮
+    color_dash = (255, 255, 255, 200)       
+    color_footer = (255, 255, 255, 245)     
     
     # 2. 绘制右上角 "今日运势" Badge
-    # 【彻底修复】：独立切割原生底图进行高斯模糊，杜绝边缘混色发灰！
     font_badge = get_font(38)
     badge_w, badge_h = 240, 80
     badge_x, badge_y = W - badge_w - 40, 50
     badge_box = (badge_x, badge_y, badge_x + badge_w, badge_y + badge_h)
     
-    b_glass = img.crop(badge_box).filter(ImageFilter.GaussianBlur(12)) # 使用高斯模糊直采
+    b_glass = img.crop(badge_box).filter(ImageFilter.GaussianBlur(12)) 
     b_tint = Image.new('RGBA', b_glass.size, glass_tint)
     b_glass = Image.alpha_composite(b_glass, b_tint)
     
@@ -139,7 +138,7 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     draw.rounded_rectangle(badge_box, radius=40, outline=color_gold, width=3)
     draw.text((badge_x + badge_w//2, badge_y + badge_h//2 - 2), "今日运势", font=font_badge, fill=color_gold, anchor="mm")
     
-    # 3. 生成底部暗态毛玻璃面板
+    # 3. 生成底部面板
     panel_h = 680  
     panel_x = 30
     panel_w = W - 60
@@ -154,7 +153,7 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, glass.size[0], glass.size[1]), radius=50, fill=255)
     img.paste(glass, (panel_x, panel_y), mask)
     
-    # 4. 绘制左上角交叠头像
+    # 4. 绘制头像
     avatar_r = 70
     avatar_cx, avatar_cy = panel_x + 110, panel_y
     draw.ellipse((avatar_cx - avatar_r - 6, avatar_cy - avatar_r - 6, 
@@ -173,51 +172,45 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     # 5. 排版面板内部文字
     center_x = W // 2
     
-    # 日期 (整体往上提)
+    # 日期 
     current_y = panel_y + 55
     font_date = get_font(34)
     draw.text((center_x, current_y), get_formatted_date(), font=font_date, fill=color_gold, anchor="mm")
-    current_y += 65
+    current_y += 55 
     
-    # 运势大字 (精确适配日期)
+    # 【核心修复】：不再强行截取最后一个字！直接全量居中输出 JSON 配置里的完整标题！
     font_huge = get_font(72)
-    summary_text = fortune_data['fortuneSummary']
-    main_char = summary_text[-1] if summary_text else "吉"
-    draw.text((center_x, current_y), main_char, font=font_huge, fill=color_white, anchor="mm")
-    current_y += 75
+    summary_text = fortune_data.get('fortuneSummary', '吉')
+    draw.text((center_x, current_y), summary_text, font=font_huge, fill=color_white, anchor="mm")
+    current_y += 65 
     
     # 星级
     font_star = get_font(50)
     draw.text((center_x, current_y), fortune_data['luckyStar'], font=font_star, fill=color_gold, anchor="mm")
     current_y += 60
     
-    # 虚线框布局设定
     box_x = panel_x + 40
     box_w = panel_w - 80
     
-    # 【第一个虚线框】：小签文
+    # 小签文框
     font_short = get_font(34)
     box1_h = 75
     draw_rounded_dashed_box(draw, (box_x, current_y, box_x + box_w, current_y + box1_h), 15, color_dash, 2, 10)
     draw.text((center_x, current_y + box1_h // 2 - 2), fortune_data['signText'], font=font_short, fill=color_white, anchor="mm")
     current_y += box1_h + 20
     
-    # 【第二个虚线框】：大签文 (自适应行距黑科技)
+    # 大签文框
     font_long = get_font(30)
     lines = wrap_text(fortune_data['unsignText'], font_long, box_w - 40)
     
     box2_y = current_y
-    # 底部预留 65px 的绝对空间给页脚，剩余的所有空间全部留给大签文框
     box2_h = (panel_y + panel_h) - box2_y - 65
     draw_rounded_dashed_box(draw, (box_x, box2_y, box_x + box_w, box2_y + box2_h), 15, color_dash, 2, 10)
     
     if lines:
-        available_h = box2_h - 20  # 框内上下各留出 10px 边距
-        # 弹簧行距：根据行数自动撑开剩余空间
+        available_h = box2_h - 20 
         line_h = available_h / len(lines)
-        line_h = min(line_h, 55)   # 但限制最大行距为 55，防止只有两行字时被拉得太散
-        
-        # 将整个文本块居中悬浮
+        line_h = min(line_h, 55)   
         total_text_h = line_h * len(lines)
         text_start_y = box2_y + (box2_h - total_text_h) / 2 + line_h / 2 - 2
         
