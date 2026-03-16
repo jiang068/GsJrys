@@ -22,31 +22,25 @@ def get_fortune_level_config() -> List[Dict]:
     levels_config = jrys_config.get_config('fortune_levels').data
     level_list = []
     
-    # 【完美解析】：直接读取新版的字典配置结构 Dict[str, List]
-    if isinstance(levels_config, dict):
-        for name, data_list in levels_config.items():
-            if isinstance(data_list, list) and len(data_list) >= 2:
-                try:
-                    level_list.append({
-                        'name': str(name).strip(),
-                        'stars': str(data_list[0]).strip(),
-                        'probability': float(data_list[1])
-                    })
-                except Exception:
-                    continue
-                    
-    # 【历史包袱兼容】：如果用户的旧配置文件没删，依然用旧的字符串分割法保底
-    elif isinstance(levels_config, list) or isinstance(levels_config, str):
-        if isinstance(levels_config, str):
+    if isinstance(levels_config, list):
+        for item in levels_config:
             try:
-                import ast
-                levels_config = ast.literal_eval(levels_config)
+                item_str = str(item).replace('：', ':').strip()
+                parts = item_str.split(':')
+                if len(parts) >= 3:
+                    level_list.append({
+                        'name': parts[0].strip(),
+                        'stars': parts[1].strip(),
+                        'probability': float(parts[2].strip())
+                    })
             except Exception:
-                levels_config = levels_config.split(',')
-                
-        if isinstance(levels_config, list):
-            for item in levels_config:
-                try:
+                continue
+    elif isinstance(levels_config, str):
+        try:
+            import ast
+            parsed = ast.literal_eval(levels_config)
+            if isinstance(parsed, list):
+                for item in parsed:
                     item_str = str(item).replace('：', ':').strip()
                     parts = item_str.split(':')
                     if len(parts) >= 3:
@@ -55,10 +49,9 @@ def get_fortune_level_config() -> List[Dict]:
                             'stars': parts[1].strip(),
                             'probability': float(parts[2].strip())
                         })
-                except Exception:
-                    continue
-                
-    # 终极兜底：如果用户把配置彻底删烂了，自动恢复完美比例
+        except Exception:
+            pass
+            
     if not level_list:
         level_list = [
             {'name': '大凶', 'stars': '☆☆☆☆☆☆☆', 'probability': 3.0},
@@ -110,31 +103,53 @@ def get_fortune_data() -> Dict[str, Any]:
             selected_lv = lv
             break
             
+    # 初始化基础运势信息
     fortune_item = {
-        'fortuneSummary': selected_lv['name'],
+        'fortuneSummary': selected_lv['name'],  # 默认使用配置中的名字，例如 "大吉"
         'luckyStar': selected_lv['stars'],
         'luckValue': int(selected_lv['probability']),
         'backgroundImage': get_random_background()
     }
     
+    # 终极匹配逻辑：扁平化 JSON 数据池，寻找包含关键字的条目
     texts = load_fortune_texts()
     matches = []
+    
+    # 获取目标匹配词（例如，把配置里的 "大吉" 拿去 json 的 fortuneSummary 里搜）
+    target_name = selected_lv['name']
+    target_stars = selected_lv['stars']
+    
     for entries in texts.values():
         for e in entries:
-            if selected_lv['name'] in e.get('fortuneSummary', '') or selected_lv['stars'] == e.get('luckyStar', ''):
+            json_name = e.get('fortuneSummary', '')
+            json_stars = e.get('luckyStar', '')
+            
+            # 【核心修复】：只要 json 里的名字包含了抽取的名字（比如 "大吉+财运" 包含 "大吉"）
+            # 或者星级完全一致，就放入备选池！
+            if target_name in json_name or target_stars == json_stars:
                 matches.append(e)
                 
     if matches:
         pick = random.choice(matches)
+        
+        # 【画龙点睛】：如果抽中了带后缀的特殊签（比如大吉+才艺），直接覆盖原本普通的 "大吉" 标题！
+        if pick.get('fortuneSummary'):
+            fortune_item['fortuneSummary'] = pick['fortuneSummary']
+            
         fortune_item['signText'] = pick.get('signText', '运势平稳，诸事顺心')
         fortune_item['unsignText'] = pick.get('unsignText', '今日运势较佳，保持积极的心态。')
     else:
         default_texts = {
             '大吉': ('鸿运当头，万事亨通', '今日运势极佳，是非常适合做重要决定和开始新事业的日子。'),
             '中吉': ('吉星照耀，诸事顺遂', '今日运势很好，工作上容易得到贵人帮助，稳步前行即可。'),
+            '小吉': ('小有收获，步步为营', '今日运势不错，稳中求进，会有意想不到的收获。'),
+            '吉': ('运势平稳，诸事顺心', '今日生活工作顺心，没有特别大的惊喜，也不会遇到阻碍。'),
+            '末吉': ('谨慎行事，量力而为', '建议保持谨慎，专注手头工作，不宜冒进。'),
+            '凶': ('诸事不顺，小心谨慎', '今日运势偏差，建议保持低调，避免与他人发生冲突。'),
+            '小凶': ('运势欠佳，凡事小心', '容易遇到小的挫折，建议推迟重要决定，保持耐心。'),
             '大凶': ('运势低迷，宜静不宜动', '今日运势较差，建议尽量减少外出和重要活动，谨言慎行。')
         }
-        dt = default_texts.get(selected_lv['name'], ('运势未明，顺其自然', '保持平常心，今天也是充实的一天。'))
+        dt = default_texts.get(target_name, ('运势未明，顺其自然', '保持平常心，今天也是充实的一天。'))
         fortune_item['signText'] = dt[0]
         fortune_item['unsignText'] = dt[1]
         

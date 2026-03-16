@@ -1,10 +1,8 @@
-from typing import Dict, List
+from typing import Dict
 from pathlib import Path
 from gsuid_core.data_store import get_res_path
 from gsuid_core.utils.plugins_config.gs_config import StringConfig
-from gsuid_core.utils.plugins_config.models import (
-    GSC, GsStrConfig, GsBoolConfig, GsIntConfig, GsDictConfig
-)
+from gsuid_core.utils.plugins_config.models import GSC, GsStrConfig, GsBoolConfig, GsIntConfig, GsListStrConfig
 
 STATIC_DIR = Path(__file__).parent / 'data'
 USER_DATA_DIR = get_res_path('GsJrys')
@@ -15,20 +13,20 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
     'footer_text': GsStrConfig('卡片页脚文字', '显示在底部的说明', '仅供娱乐哦 | GsCore & GsJrys'),
     'panel_opacity': GsIntConfig('黑框不透明度', '毛玻璃黑底的不透明度(0-255，越小越透明)', 120, 255),
     
-    # 【核心优化】：使用 GsDictConfig 彻底替换原先容易写错的字符串列表
-    'fortune_levels': GsDictConfig(
+    # 还原回 GsListStrConfig，保证网页控制台绝对能显示！
+    'fortune_levels': GsListStrConfig(
         '运势概率与星级配置',
-        '键为运势名称，值为 [星级符号, 抽中概率]。概率总和应为100。',
-        {
-            '大凶': ['☆☆☆☆☆☆☆', 3],
-            '小凶': ['★☆☆☆☆☆☆', 5], 
-            '凶': ['★★☆☆☆☆☆', 7],
-            '末吉': ['★★★☆☆☆☆', 10],
-            '吉': ['★★★★☆☆☆', 20],
-            '小吉': ['★★★★★☆☆', 25],
-            '中吉': ['★★★★★★☆', 20],
-            '大吉': ['★★★★★★★', 10]
-        }
+        '格式 => 运势名称:星级符号:抽中概率(%)。即使不小心打成中文冒号，系统也会自动修复！',
+        [
+            '大凶:☆☆☆☆☆☆☆:3',
+            '小凶:★☆☆☆☆☆☆:5', 
+            '凶:★★☆☆☆☆☆:7',
+            '末吉:★★★☆☆☆☆:10',
+            '吉:★★★★☆☆☆:20',
+            '小吉:★★★★★☆☆:25',
+            '中吉:★★★★★★☆:20',
+            '大吉:★★★★★★★:10'
+        ]
     )
 }
 
