@@ -9,12 +9,26 @@ from .config import jrys_config, STATIC_DIR, USER_DATA_DIR
 USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def load_fortune_texts() -> Dict[str, List[Dict]]:
+    custom_path_str = jrys_config.get_config('custom_json_path').data
+    
     data_file = STATIC_DIR / 'jrys.json'
+    
+    if custom_path_str:
+        custom_path = Path(custom_path_str.strip())
+
+        if not custom_path.is_absolute():
+            plugin_root = Path(__file__).parent
+            custom_path = plugin_root / custom_path
+
+        if custom_path.exists() and custom_path.is_file():
+            data_file = custom_path
+            
     if data_file.exists():
         try:
             with open(data_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception:
+            # 如果 JSON 格式错误，直接返回空字典，交由外层防报错逻辑兜底
             return {}
     return {}
 
