@@ -181,10 +181,10 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     center_x = W // 2
     
     # 日期 
-    current_y = panel_y + 55
+    current_y = panel_y + 40
     font_date = get_font(34)
     draw.text((center_x, current_y), get_formatted_date(), font=font_date, fill=color_gold, anchor="mm")
-    current_y += 55 
+    current_y += 70 
     
     font_huge = get_font(72)
     summary_text = fortune_data.get('fortuneSummary', '吉')
