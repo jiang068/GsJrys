@@ -138,9 +138,11 @@ async def view_fortune_levels(bot: Bot, ev: Event):
     level_config = get_fortune_level_config()
     is_valid, total_prob = validate_probabilities()
     
-    msg = ["📊 当前运势等级与概率配置："]
+    msg = ["📊 当前运势星级与概率配置："]
     for lv in level_config:
-        msg.append(f"{lv['stars']} {lv['name']} - {lv['probability']}%")
+        lvl_num = int(lv['level'])
+        stars_str = '★' * lvl_num + '☆' * (7 - lvl_num)
+        msg.append(f"{stars_str} ({lv['level']}星) - {lv['probability']}%")
         
     msg.append(f"\n概率总和: {total_prob:.1f}%")
     msg.append("✅ 配置正常" if is_valid else "⚠️ 警告：总和非100%，系统已自动按比例分配。")

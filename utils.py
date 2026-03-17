@@ -22,46 +22,41 @@ def get_fortune_level_config() -> List[Dict]:
     levels_config = jrys_config.get_config('fortune_levels').data
     level_list = []
     
-    if isinstance(levels_config, list):
-        for item in levels_config:
+    def parse_items(items):
+        for item in items:
             try:
                 item_str = str(item).replace('：', ':').strip()
                 parts = item_str.split(':')
-                if len(parts) >= 3:
-                    level_list.append({
-                        'name': parts[0].strip(),
-                        'stars': parts[1].strip(),
-                        'probability': float(parts[2].strip())
-                    })
+                if len(parts) >= 2:
+                    lvl = int(parts[0].strip())
+                    prob = float(parts[1].strip())
+                    if 0 <= lvl <= 7:  # 确保只有 0-7 级
+                        level_list.append({'level': str(lvl), 'probability': prob})
             except Exception:
                 continue
+
+    if isinstance(levels_config, list):
+        parse_items(levels_config)
     elif isinstance(levels_config, str):
         try:
             import ast
             parsed = ast.literal_eval(levels_config)
             if isinstance(parsed, list):
-                for item in parsed:
-                    item_str = str(item).replace('：', ':').strip()
-                    parts = item_str.split(':')
-                    if len(parts) >= 3:
-                        level_list.append({
-                            'name': parts[0].strip(),
-                            'stars': parts[1].strip(),
-                            'probability': float(parts[2].strip())
-                        })
+                parse_items(parsed)
         except Exception:
             pass
             
+    # 如果用户乱填导致配置为空，启用极致精简的保底概率
     if not level_list:
         level_list = [
-            {'name': '大凶', 'stars': '☆☆☆☆☆☆☆', 'probability': 3.0},
-            {'name': '小凶', 'stars': '★☆☆☆☆☆☆', 'probability': 5.0},
-            {'name': '凶', 'stars': '★★☆☆☆☆☆', 'probability': 7.0},
-            {'name': '末吉', 'stars': '★★★☆☆☆☆', 'probability': 10.0},
-            {'name': '吉', 'stars': '★★★★☆☆☆', 'probability': 20.0},
-            {'name': '小吉', 'stars': '★★★★★☆☆', 'probability': 25.0},
-            {'name': '中吉', 'stars': '★★★★★★☆', 'probability': 20.0},
-            {'name': '大吉', 'stars': '★★★★★★★', 'probability': 10.0}
+            {'level': '0', 'probability': 3.0},
+            {'level': '1', 'probability': 5.0},
+            {'level': '2', 'probability': 7.0},
+            {'level': '3', 'probability': 10.0},
+            {'level': '4', 'probability': 20.0},
+            {'level': '5', 'probability': 25.0},
+            {'level': '6', 'probability': 20.0},
+            {'level': '7', 'probability': 10.0}
         ]
     return level_list
 
@@ -97,52 +92,41 @@ def get_fortune_data() -> Dict[str, Any]:
     current = 0
     selected_lv = levels[-1]
     
+    # 按概率抽取星级
     for lv in levels:
         current += lv['probability']
         if r <= current:
             selected_lv = lv
             break
             
+    target_level = selected_lv['level']
+    stars_count = int(target_level)
+    
+    # 动态生成星星字符串，不用再写死在配置和 JSON 里
+    lucky_star = '★' * stars_count + '☆' * (7 - stars_count)
+            
     fortune_item = {
-        'fortuneSummary': selected_lv['name'], 
-        'luckyStar': selected_lv['stars'],
+        'luckyStar': lucky_star,
         'luckValue': int(selected_lv['probability']),
         'backgroundImage': get_random_background()
     }
     
     texts = load_fortune_texts()
-    matches = []
     
-    target_name = selected_lv['name']
-    target_stars = selected_lv['stars']
+    # 直接根据数字键值（如 "7", "6"）去 JSON 里取数组
+    level_texts = texts.get(target_level, [])
     
-    for entries in texts.values():
-        for e in entries:
-            json_name = e.get('fortuneSummary', '')
-            json_stars = e.get('luckyStar', '')
-            if target_name in json_name or target_stars == json_stars:
-                matches.append(e)
-                
-    if matches:
-        pick = random.choice(matches)
-        if pick.get('fortuneSummary'):
-            fortune_item['fortuneSummary'] = pick['fortuneSummary']
-        fortune_item['signText'] = pick.get('signText', '运势平稳，诸事顺心')
-        fortune_item['unsignText'] = pick.get('unsignText', '今日运势较佳，保持积极的心态。')
+    if level_texts:
+        pick = random.choice(level_texts)
+        # 只要 JSON 里有的内容，直接塞进去，高度自由
+        fortune_item['fortuneSummary'] = pick.get('fortuneSummary', '神秘运势')
+        fortune_item['signText'] = pick.get('signText', '……')
+        fortune_item['unsignText'] = pick.get('unsignText', '……')
     else:
-        default_texts = {
-            '大吉': ('鸿运当头，万事亨通', '今日运势极佳，是非常适合做重要决定和开始新事业的日子。'),
-            '中吉': ('吉星照耀，诸事顺遂', '今日运势很好，工作上容易得到贵人帮助，稳步前行即可。'),
-            '小吉': ('小有收获，步步为营', '今日运势不错，稳中求进，会有意想不到的收获。'),
-            '吉': ('运势平稳，诸事顺心', '今日生活工作顺心，没有特别大的惊喜，也不会遇到阻碍。'),
-            '末吉': ('谨慎行事，量力而为', '建议保持谨慎，专注手头工作，不宜冒进。'),
-            '凶': ('诸事不顺，小心谨慎', '今日运势偏差，建议保持低调，避免与他人发生冲突。'),
-            '小凶': ('运势欠佳，凡事小心', '容易遇到小的挫折，建议推迟重要决定，保持耐心。'),
-            '大凶': ('运势低迷，宜静不宜动', '今日运势较差，建议尽量减少外出和重要活动，谨言慎行。')
-        }
-        dt = default_texts.get(target_name, ('运势未明，顺其自然', '保持平常心，今天也是充实的一天。'))
-        fortune_item['signText'] = dt[0]
-        fortune_item['unsignText'] = dt[1]
+        # 如果对应的星级在 JSON 里完全没写，给个极简防报错提示
+        fortune_item['fortuneSummary'] = '未知'
+        fortune_item['signText'] = '运势迷失在了时空裂隙中...'
+        fortune_item['unsignText'] = f'请检查 jrys.json 中是否正确配置了 {target_level} 星级的数据。'
         
     return fortune_item
 
