@@ -50,7 +50,7 @@ async def get_fortune(bot: Bot, ev: Event):
     except Exception as e:
         await bot.send(f'运势获取失败，服务器开了个小差：{e}')
 
-@jrys_sv.on_fullmatch(('毁签', '悔签', '重抽'), block=True)
+@jrys_sv.on_fullmatch(('毁签', '悔签', '重抽', '逆天改命'), block=True)
 async def redraw_fortune(bot: Bot, ev: Event):
     """销毁当前运势，重新抽取"""
     user_id = ev.user_id
@@ -78,7 +78,7 @@ async def redraw_fortune(bot: Bot, ev: Event):
         await bot.send(img_bytes)
             
     except Exception as e:
-        await bot.send(f'毁签过程出现了小故障：{e}')
+        await bot.send(f'悔签过程出现了小故障：{e}')
 
 @jrys_sv.on_fullmatch('运势背景图', block=True)
 async def send_fortune_bg(bot: Bot, ev: Event):
