@@ -19,6 +19,8 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
 
     'custom_json_path': GsStrConfig('自定义运势文案路径', '可填写绝对路径或相对路径(相对于GsJrys根目录)。留空则使用默认的 data/jrys.json', ''),
     
+    'custom_bg_path': GsStrConfig('自定义背景图目录', '可填写绝对路径或相对路径(相对于GsJrys根目录)。留空则使用默认的 data/backgroundFolder', ''),
+
     'fortune_levels': GsListStrConfig(
         '运势概率与星级配置',
         '格式 => 星级(0-7):抽中概率(%)。例如 7:10 表示7星概率为10%。即使打成中文冒号系统也会自动修复！',

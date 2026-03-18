@@ -88,9 +88,28 @@ def validate_probabilities() -> Tuple[bool, float]:
     return abs(total - 100.0) < 0.01, total
 
 def get_random_background() -> str:
+    custom_bg_str = jrys_config.get_config('custom_bg_path').data
     bg_folder = STATIC_DIR / 'backgroundFolder'
+    
+    if custom_bg_str:
+        cleaned_path_str = custom_bg_str.strip(' "\'')
+        
+        if cleaned_path_str:
+            custom_path = Path(cleaned_path_str)
+            
+            if not custom_path.is_absolute():
+                plugin_root = Path(__file__).parent
+                custom_path = (plugin_root / custom_path).resolve()
+            else:
+                custom_path = custom_path.resolve()
+                
+            if custom_path.exists() and custom_path.is_dir():
+                bg_folder = custom_path
+            else:
+                logger.warning(f"[GsJrys] 自定义背景图目录不存在或不是文件夹，已回退默认！实际寻找的路径是: {custom_path}")
+                
     if not bg_folder.exists():
-        bg_folder.mkdir(parents=True)
+        bg_folder.mkdir(parents=True, exist_ok=True)
         return ""
         
     all_bgs = []
@@ -105,7 +124,6 @@ def get_random_background() -> str:
             all_bgs.append(str(file))
             
     return random.choice(all_bgs) if all_bgs else ""
-
 def get_fortune_data() -> Dict[str, Any]:
     levels = get_fortune_level_config()
     is_valid, total_prob = validate_probabilities()
