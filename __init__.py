@@ -80,7 +80,7 @@ async def redraw_fortune(bot: Bot, ev: Event):
     except Exception as e:
         await bot.send(f'悔签过程出现了小故障：{e}')
 
-@jrys_sv.on_fullmatch('运势背景图', block=True)
+@jrys_sv.on_command(('运势背景图', '运势背景','运势图'), block=True)
 async def send_fortune_bg(bot: Bot, ev: Event):
     """获取运势底图（支持 @别人，或直接获取自己的）"""
     today = datetime.now().strftime('%Y-%m-%d')
@@ -88,7 +88,7 @@ async def send_fortune_bg(bot: Bot, ev: Event):
     try:
         # 如果检测到群友使用了引用回复，委婉提示 GsCore 的限制
         if has_reply(ev):
-            return await bot.send("由于 GsCore 底层限制，目前无法通过引用卡片来找图哦！\n👉 请直接输入【运势背景图 @对方】来获取别人的神仙底图~")
+            return await bot.send("请发送【运势背景图 @抽取那张运势图的人】来获取别人的运势背景图")
             
         # 按照 @ 或本人查询
         target_id = ev.user_id
