@@ -11,7 +11,7 @@ from .utils import (
     get_fortune_data, save_fortune_record, get_fortune_record,
     cleanup_old_fortune_files, get_fortune_level_config, validate_probabilities
 )
-from .draw import draw_fortune_card
+from .draw import draw_fortune_card, stamp_background_image
 
 jrys_sv = SV('每日运势')
 _last_cleanup_date = None
@@ -44,7 +44,7 @@ async def get_fortune(bot: Bot, ev: Event):
             fortune_data = get_fortune_data()
             await save_fortune_record(user_id, today, fortune_data, ev.bot_id)
             
-        img_bytes = await draw_fortune_card(user_id, fortune_data)
+        img_bytes = await draw_fortune_card(user_id, fortune_data, ev.user_id, ev.bot_id)
         await bot.send(img_bytes)
             
     except Exception as e:
@@ -74,7 +74,7 @@ async def redraw_fortune(bot: Bot, ev: Event):
         new_fortune_data = get_fortune_data()
         await save_fortune_record(user_id, today, new_fortune_data, ev.bot_id, redraw_count=current_redraws + 1)
         
-        img_bytes = await draw_fortune_card(user_id, new_fortune_data)
+        img_bytes = await draw_fortune_card(user_id, new_fortune_data, ev.user_id, ev.bot_id)
         await bot.send(img_bytes)
             
     except Exception as e:
@@ -109,16 +109,18 @@ async def send_fortune_bg(bot: Bot, ev: Event):
         if not bg_path:
             return await bot.send("未能找到对应的背景图数据！")
             
-        # 发送原底图
+        # 发送前写入极小溯源标记，避免原图字节固定导致平台拦截
         if bg_path.startswith('http'):
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.get(bg_path)
                 resp.raise_for_status()
-                await bot.send(resp.content)
+                img_bytes = stamp_background_image(resp.content, target_id, ev.user_id, ev.bot_id, bg_path)
+                await bot.send(img_bytes)
         else:
             path_obj = Path(bg_path)
             if path_obj.exists():
-                await bot.send(path_obj.read_bytes())
+                img_bytes = stamp_background_image(path_obj, target_id, ev.user_id, ev.bot_id)
+                await bot.send(img_bytes)
             else:
                 await bot.send("底图文件在本地已丢失或被移除！")
                 

@@ -1,7 +1,10 @@
 import httpx
 import math
+import hashlib
 from pathlib import Path
 from io import BytesIO
+from datetime import datetime
+from time import time_ns
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from .config import jrys_config, STATIC_DIR
 from .utils import get_formatted_date
@@ -25,6 +28,58 @@ async def load_image_from_url(url: str, timeout: int = 10) -> Image.Image:
             return Image.open(BytesIO(resp.content)).convert('RGBA')
     except Exception:
         return None
+
+def build_trace_lines(kind: str, target_user_id: str, request_user_id: str, bot_id: str = "", source_id: str = "") -> list:
+    now = datetime.now()
+    source_hash = hashlib.sha1(source_id.encode('utf-8')).hexdigest()[:10] if source_id else ""
+    return [
+        f"type={kind} ts={now.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} ns={time_ns()}",
+        f"uid={target_user_id} req={request_user_id} bot={bot_id} src={source_hash}",
+    ]
+
+def draw_trace_stamp(img: Image.Image, trace_lines: list):
+    w, h = img.size
+    font_size = max(8, min(14, min(w, h) // 120))
+    font = get_font(font_size)
+    draw = ImageDraw.Draw(img, 'RGBA')
+    x, y = 2, 2
+    line_h = max(font_size + 2, 10)
+
+    for idx, line in enumerate(trace_lines):
+        line_y = y + idx * line_h
+        draw.text((x + 1, line_y + 1), line, font=font, fill=(0, 0, 0, 42))
+        draw.text((x, line_y), line, font=font, fill=(255, 255, 255, 55))
+
+def stamp_background_image(source, target_user_id: str, request_user_id: str, bot_id: str = "", source_id: str = "") -> bytes:
+    """Add a tiny trace stamp before sending a background image."""
+    if isinstance(source, (str, Path)):
+        source_path = Path(source)
+        source_size = source_path.stat().st_size if source_path.exists() else 0
+        source_id = source_id or str(source_path)
+        src_ctx = Image.open(source_path)
+    else:
+        source_size = len(source) if source else 0
+        src_ctx = Image.open(BytesIO(source))
+
+    with src_ctx as src:
+        src.load()
+        if src.mode == 'RGBA' or 'transparency' in src.info:
+            rgba = src.convert('RGBA')
+            img = Image.new('RGB', rgba.size, (255, 255, 255))
+            img.paste(rgba, mask=rgba.getchannel('A'))
+        else:
+            img = src.convert('RGB')
+
+    trace_lines = build_trace_lines('bg', target_user_id, request_user_id, bot_id, source_id)
+    draw_trace_stamp(img, trace_lines)
+
+    size_limit = int(source_size * 1.2) if source_size > 0 else 0
+    for quality in (80, 70, 60, 50):
+        buf = BytesIO()
+        img.save(buf, format='JPEG', quality=quality, optimize=True)
+        data = buf.getvalue()
+        if not size_limit or len(data) <= size_limit or quality == 50:
+            return data
 
 async def get_avatar_image(user_id: str) -> Image.Image:
     """获取并缓存QQ头像"""
@@ -87,7 +142,7 @@ def draw_rounded_dashed_box(draw: ImageDraw.Draw, xy: tuple, radius: int, fill: 
     draw.arc((x1, y2-2*radius, x1+2*radius, y2), 90, 180, fill=fill, width=width)
     draw.arc((x2-2*radius, y2-2*radius, x2, y2), 0, 90, fill=fill, width=width)
 
-async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
+async def draw_fortune_card(user_id: str, fortune_data: dict, request_user_id: str = "", bot_id: str = "") -> bytes:
     W, H = 1080, 1920
     
     # 1. 加载并处理背景图
@@ -233,6 +288,15 @@ async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
         footer_text = "仅供娱乐哦 | GsCore & GsJrys"
         
     draw.text((center_x, panel_y + panel_h - 35), footer_text, font=font_footer, fill=color_footer, anchor="mm")
+
+    trace_lines = build_trace_lines(
+        'card',
+        user_id,
+        request_user_id or user_id,
+        bot_id,
+        bg_path,
+    )
+    draw_trace_stamp(img, trace_lines)
         
     # 【体积与格式极致优化】：去除 Alpha 透明通道转换为纯净 RGB，并以高压缩率 JPEG 格式导出
     # 这一步能将原来 1~2MB 的 PNG 瞬间压缩到 150KB~300KB 左右！
