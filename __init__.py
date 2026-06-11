@@ -1,5 +1,4 @@
 import asyncio
-import httpx
 from pathlib import Path
 from datetime import datetime
 from gsuid_core.sv import SV
@@ -11,7 +10,7 @@ from .utils import (
     get_fortune_data, save_fortune_record, get_fortune_record,
     cleanup_old_fortune_files, get_fortune_level_config, validate_probabilities
 )
-from .draw import draw_fortune_card, stamp_background_image
+from .draw import draw_fortune_card, fetch_url_bytes, perturb_background_image
 
 jrys_sv = SV('每日运势')
 _last_cleanup_date = None
@@ -44,7 +43,7 @@ async def get_fortune(bot: Bot, ev: Event):
             fortune_data = get_fortune_data()
             await save_fortune_record(user_id, today, fortune_data, ev.bot_id)
             
-        img_bytes = await draw_fortune_card(user_id, fortune_data, ev.user_id, ev.bot_id)
+        img_bytes = await draw_fortune_card(user_id, fortune_data)
         await bot.send(img_bytes)
             
     except Exception as e:
@@ -74,7 +73,7 @@ async def redraw_fortune(bot: Bot, ev: Event):
         new_fortune_data = get_fortune_data()
         await save_fortune_record(user_id, today, new_fortune_data, ev.bot_id, redraw_count=current_redraws + 1)
         
-        img_bytes = await draw_fortune_card(user_id, new_fortune_data, ev.user_id, ev.bot_id)
+        img_bytes = await draw_fortune_card(user_id, new_fortune_data)
         await bot.send(img_bytes)
             
     except Exception as e:
@@ -109,17 +108,17 @@ async def send_fortune_bg(bot: Bot, ev: Event):
         if not bg_path:
             return await bot.send("未能找到对应的背景图数据！")
             
-        # 发送前写入极小溯源标记，避免原图字节固定导致平台拦截
+        # 发送前轻微扰动像素，避免原图字节固定导致平台拦截
         if bg_path.startswith('http'):
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(bg_path)
-                resp.raise_for_status()
-                img_bytes = stamp_background_image(resp.content, target_id, ev.user_id, ev.bot_id, bg_path)
-                await bot.send(img_bytes)
+            bg_bytes = await fetch_url_bytes(bg_path, 15.0)
+            if not bg_bytes:
+                return await bot.send("底图下载失败，请稍后再试！")
+            img_bytes = perturb_background_image(bg_bytes)
+            await bot.send(img_bytes)
         else:
             path_obj = Path(bg_path)
             if path_obj.exists():
-                img_bytes = stamp_background_image(path_obj, target_id, ev.user_id, ev.bot_id)
+                img_bytes = perturb_background_image(path_obj)
                 await bot.send(img_bytes)
             else:
                 await bot.send("底图文件在本地已丢失或被移除！")

@@ -1,16 +1,18 @@
 import httpx
 import math
-import hashlib
+import random
+from collections import OrderedDict
 from pathlib import Path
 from io import BytesIO
-from datetime import datetime
-from time import time_ns
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from .config import jrys_config, STATIC_DIR
 from .utils import get_formatted_date
 
 _font_cache = {}
-_avatar_cache = {}
+_avatar_cache = OrderedDict()
+_avatar_cache_limit = 128
+_http_client = None
+_http_limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
 
 def get_font(size: int) -> ImageFont.FreeTypeFont:
     if size in _font_cache:
@@ -20,40 +22,60 @@ def get_font(size: int) -> ImageFont.FreeTypeFont:
     _font_cache[size] = font
     return font
 
-async def load_image_from_url(url: str, timeout: int = 10) -> Image.Image:
+def get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(limits=_http_limits)
+    return _http_client
+
+async def fetch_url_bytes(url: str, timeout: float = 10.0):
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return Image.open(BytesIO(resp.content)).convert('RGBA')
+        resp = await get_http_client().get(url, timeout=timeout)
+        resp.raise_for_status()
+        return resp.content
     except Exception:
         return None
 
-def build_trace_lines(kind: str, target_user_id: str, request_user_id: str, bot_id: str = "", source_id: str = "") -> list:
-    now = datetime.now()
-    source_hash = hashlib.sha1(source_id.encode('utf-8')).hexdigest()[:10] if source_id else ""
-    return [
-        f"type={kind} ts={now.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} ns={time_ns()} uid={target_user_id} req={request_user_id} bot={bot_id} src={source_hash}",
-    ]
+async def load_image_from_url(url: str, timeout: int = 10) -> Image.Image:
+    data = await fetch_url_bytes(url, timeout)
+    if not data:
+        return None
+    try:
+        with Image.open(BytesIO(data)) as src:
+            return src.convert('RGBA')
+    except Exception:
+        return None
 
-def draw_trace_stamp(img: Image.Image, trace_lines: list):
+def perturb_image_pixels(img: Image.Image, count: int = 32, delta: int = 24):
+    """Randomly nudge a few pixels so every sent image has different bytes."""
     w, h = img.size
-    font_size = max(5, min(8, min(w, h) // 240))
-    font = get_font(font_size)
-    draw = ImageDraw.Draw(img, 'RGBA')
-    x, y = 0, 0
-    line_h = max(font_size + 2, 10)
+    if w <= 0 or h <= 0:
+        return
 
-    for idx, line in enumerate(trace_lines):
-        line_y = y + idx * line_h
-        draw.text((x, line_y), line, font=font, fill=(255, 255, 255, 12))
+    px = img.load()
+    max_count = max(1, min(count, w * h))
+    for pos in random.sample(range(w * h), max_count):
+        x = pos % w
+        y = pos // w
+        pixel = px[x, y]
+        if not isinstance(pixel, tuple):
+            change = delta if pixel <= delta else -delta if pixel >= 255 - delta else delta if random.getrandbits(1) else -delta
+            px[x, y] = max(0, min(255, pixel + change))
+            continue
 
-def stamp_background_image(source, target_user_id: str, request_user_id: str, bot_id: str = "", source_id: str = "") -> bytes:
-    """Add a tiny trace stamp before sending a background image."""
+        channels = list(pixel)
+        color_channels = min(3, len(channels))
+        channel_idx = random.randrange(color_channels)
+        old = channels[channel_idx]
+        change = delta if old <= delta else -delta if old >= 255 - delta else delta if random.getrandbits(1) else -delta
+        channels[channel_idx] = max(0, min(255, channels[channel_idx] + change))
+        px[x, y] = tuple(channels)
+
+def perturb_background_image(source) -> bytes:
+    """Slightly perturb a background image before sending it."""
     if isinstance(source, (str, Path)):
         source_path = Path(source)
         source_size = source_path.stat().st_size if source_path.exists() else 0
-        source_id = source_id or str(source_path)
         src_ctx = Image.open(source_path)
     else:
         source_size = len(source) if source else 0
@@ -68,8 +90,7 @@ def stamp_background_image(source, target_user_id: str, request_user_id: str, bo
         else:
             img = src.convert('RGB')
 
-    trace_lines = build_trace_lines('bg', target_user_id, request_user_id, bot_id, source_id)
-    draw_trace_stamp(img, trace_lines)
+    perturb_image_pixels(img)
 
     size_limit = int(source_size * 1.2) if source_size > 0 else 0
     for quality in (80, 70, 60, 50):
@@ -82,16 +103,20 @@ def stamp_background_image(source, target_user_id: str, request_user_id: str, bo
 async def get_avatar_image(user_id: str) -> Image.Image:
     """获取并缓存QQ头像"""
     if user_id in _avatar_cache:
+        _avatar_cache.move_to_end(user_id)
         return _avatar_cache[user_id]
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            res = await client.get(f"http://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640")
-            if res.status_code == 200:
-                img = Image.open(BytesIO(res.content)).convert('RGBA')
+
+    data = await fetch_url_bytes(f"http://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640", 5.0)
+    if data:
+        try:
+            with Image.open(BytesIO(data)) as src:
+                img = src.convert('RGBA').resize((140, 140), Image.Resampling.LANCZOS)
                 _avatar_cache[user_id] = img
+                if len(_avatar_cache) > _avatar_cache_limit:
+                    _avatar_cache.popitem(last=False)
                 return img
-    except Exception:
-        pass
+        except Exception:
+            pass
     return None
 
 def crop_center_img(img: Image.Image, width: int, height: int) -> Image.Image:
@@ -140,7 +165,7 @@ def draw_rounded_dashed_box(draw: ImageDraw.Draw, xy: tuple, radius: int, fill: 
     draw.arc((x1, y2-2*radius, x1+2*radius, y2), 90, 180, fill=fill, width=width)
     draw.arc((x2-2*radius, y2-2*radius, x2, y2), 0, 90, fill=fill, width=width)
 
-async def draw_fortune_card(user_id: str, fortune_data: dict, request_user_id: str = "", bot_id: str = "") -> bytes:
+async def draw_fortune_card(user_id: str, fortune_data: dict) -> bytes:
     W, H = 1080, 1920
     
     # 1. 加载并处理背景图
@@ -150,13 +175,12 @@ async def draw_fortune_card(user_id: str, fortune_data: dict, request_user_id: s
         if bg_path.startswith('http'):
             bg = await load_image_from_url(bg_path)
         elif Path(bg_path).exists():
-            bg = Image.open(bg_path).convert('RGBA')
+            with Image.open(bg_path) as src:
+                bg = src.convert('RGBA')
     if not bg:
         bg = Image.new('RGBA', (W, H), (161, 196, 253, 255))
         
-    bg = crop_center_img(bg, W, H)
-    img = Image.new('RGBA', (W, H))
-    img.paste(bg, (0, 0))
+    img = crop_center_img(bg, W, H)
     
     # 获取透明度配置
     try:
@@ -213,6 +237,7 @@ async def draw_fortune_card(user_id: str, fortune_data: dict, request_user_id: s
     mask = Image.new('L', glass.size, 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, glass.size[0], glass.size[1]), radius=50, fill=255)
     img.paste(glass, (panel_x, panel_y), mask)
+    del blurred_bg, b_glass, b_tint, b_mask, glass, tint, mask
     
     # 4. 绘制头像
     avatar_r = 70
@@ -222,7 +247,9 @@ async def draw_fortune_card(user_id: str, fortune_data: dict, request_user_id: s
     
     avatar_img = await get_avatar_image(user_id)
     if avatar_img:
-        avatar_img = avatar_img.resize((avatar_r * 2, avatar_r * 2), Image.Resampling.LANCZOS)
+        avatar_size = (avatar_r * 2, avatar_r * 2)
+        if avatar_img.size != avatar_size:
+            avatar_img = avatar_img.resize(avatar_size, Image.Resampling.LANCZOS)
         av_mask = Image.new('L', (avatar_r * 2, avatar_r * 2), 0)
         ImageDraw.Draw(av_mask).ellipse((0, 0, avatar_r * 2, avatar_r * 2), fill=255)
         img.paste(avatar_img, (avatar_cx - avatar_r, avatar_cy - avatar_r), av_mask)
@@ -287,14 +314,7 @@ async def draw_fortune_card(user_id: str, fortune_data: dict, request_user_id: s
         
     draw.text((center_x, panel_y + panel_h - 35), footer_text, font=font_footer, fill=color_footer, anchor="mm")
 
-    trace_lines = build_trace_lines(
-        'card',
-        user_id,
-        request_user_id or user_id,
-        bot_id,
-        bg_path,
-    )
-    draw_trace_stamp(img, trace_lines)
+    perturb_image_pixels(img)
         
     # 【体积与格式极致优化】：去除 Alpha 透明通道转换为纯净 RGB，并以高压缩率 JPEG 格式导出
     # 这一步能将原来 1~2MB 的 PNG 瞬间压缩到 150KB~300KB 左右！
