@@ -33,22 +33,20 @@ def build_trace_lines(kind: str, target_user_id: str, request_user_id: str, bot_
     now = datetime.now()
     source_hash = hashlib.sha1(source_id.encode('utf-8')).hexdigest()[:10] if source_id else ""
     return [
-        f"type={kind} ts={now.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} ns={time_ns()}",
-        f"uid={target_user_id} req={request_user_id} bot={bot_id} src={source_hash}",
+        f"type={kind} ts={now.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} ns={time_ns()} uid={target_user_id} req={request_user_id} bot={bot_id} src={source_hash}",
     ]
 
 def draw_trace_stamp(img: Image.Image, trace_lines: list):
     w, h = img.size
-    font_size = max(8, min(14, min(w, h) // 120))
+    font_size = max(5, min(8, min(w, h) // 240))
     font = get_font(font_size)
     draw = ImageDraw.Draw(img, 'RGBA')
-    x, y = 2, 2
+    x, y = 0, 0
     line_h = max(font_size + 2, 10)
 
     for idx, line in enumerate(trace_lines):
         line_y = y + idx * line_h
-        draw.text((x + 1, line_y + 1), line, font=font, fill=(0, 0, 0, 42))
-        draw.text((x, line_y), line, font=font, fill=(255, 255, 255, 55))
+        draw.text((x, line_y), line, font=font, fill=(255, 255, 255, 12))
 
 def stamp_background_image(source, target_user_id: str, request_user_id: str, bot_id: str = "", source_id: str = "") -> bytes:
     """Add a tiny trace stamp before sending a background image."""
